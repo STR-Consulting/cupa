@@ -13,7 +13,6 @@
 				"completeUnimported": true,
 				"experimentalPostfixCompletions": true,
 				"templateExtensions": ["gohtml"],
-				"directoryFilters": ["-", "+internal", "+cmd", "+web"],
 				"hints": {
 					"assignVariableTypes": false,
 					"compositeLiteralFields": false,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,14 +20,64 @@ import (
 
 const (
 	clickupBase    = "https://api.clickup.com/api/v3"
-	workspaceID    = "9011518645"
-	channelID      = "6-901113290332-8"
-	messagesPath   = "/workspaces/" + workspaceID + "/chat/channels/" + channelID + "/messages"
+	configFile     = ".cupa.yaml"
 	minRequestGap  = 700 * time.Millisecond // ~1.5 req/s
 	defaultLimit   = 20
 	defaultTimeout = 60
 	pollInterval   = 5 * time.Second
 )
+
+type config struct {
+	WorkspaceID string
+	ChannelID   string
+	Sender      string
+}
+
+var cfg config
+
+func loadConfig() error {
+	cfg = config{
+		WorkspaceID: "9011518645",
+		ChannelID:   "6-901113290332-8",
+	}
+
+	f, err := os.Open(configFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("open %s: %w", configFile, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		val = strings.Trim(val, `"'`)
+		switch key {
+		case "workspace_id":
+			cfg.WorkspaceID = val
+		case "channel_id":
+			cfg.ChannelID = val
+		case "sender":
+			cfg.Sender = val
+		}
+	}
+	return scanner.Err()
+}
+
+func messagesPath() string {
+	return "/workspaces/" + cfg.WorkspaceID + "/chat/channels/" + cfg.ChannelID + "/messages"
+}
 
 // rateLimiter enforces minimum gap between ClickUp API calls.
 var rateLimiter = struct {
@@ -81,14 +132,27 @@ func clickupRequest(ctx context.Context, method, path string, body any) ([]byte,
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var detail string
 		var apiErr struct {
 			Status  int    `json:"status"`
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Message != "" {
-			return nil, fmt.Errorf("ClickUp API error %d: %s", resp.StatusCode, apiErr.Message)
+			detail = apiErr.Message
+		} else {
+			detail = string(respBody)
 		}
-		return nil, fmt.Errorf("ClickUp API error %d: %s", resp.StatusCode, respBody)
+
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			return nil, fmt.Errorf("ClickUp API 401: %s — token is invalid or expired. Use check_setup to get a new token", detail)
+		case http.StatusNotFound:
+			return nil, fmt.Errorf("ClickUp API 404: %s — workspace or channel not found. Check workspace_id and channel_id in .cupa.yaml", detail)
+		case http.StatusTooManyRequests:
+			return nil, fmt.Errorf("ClickUp API 429: rate limited — wait a moment and retry. Detail: %s", detail)
+		default:
+			return nil, fmt.Errorf("ClickUp API error %d: %s", resp.StatusCode, detail)
+		}
 	}
 
 	return respBody, nil
@@ -102,7 +166,7 @@ type message struct {
 }
 
 func readMessages(ctx context.Context) ([]message, error) {
-	data, err := clickupRequest(ctx, http.MethodGet, messagesPath, nil)
+	data, err := clickupRequest(ctx, http.MethodGet, messagesPath(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +203,95 @@ func toolError(msg string) *mcp.CallToolResult {
 	}
 }
 
+// --- Tool: check_setup ---
+
+type checkSetupArgs struct{}
+
+func handleCheckSetup(_ context.Context, _ *mcp.CallToolRequest, _ checkSetupArgs) (*mcp.CallToolResult, any, error) {
+	var b strings.Builder
+
+	// Check CLICKUP_TOKEN
+	token := os.Getenv("CLICKUP_TOKEN")
+	if token == "" {
+		b.WriteString("## CLICKUP_TOKEN: NOT SET\n\n")
+		b.WriteString("The CLICKUP_TOKEN environment variable is required for authentication.\n\n")
+		b.WriteString("### How to create a ClickUp API token\n\n")
+		b.WriteString("1. Log in to ClickUp\n")
+		b.WriteString("2. Click your avatar (bottom-left) → Settings\n")
+		b.WriteString("3. Go to Apps (in the sidebar)\n")
+		b.WriteString("4. Under \"API Token\", click Generate\n")
+		b.WriteString("5. Copy the token (starts with pk_)\n\n")
+		b.WriteString("### Add the token to your MCP config\n\n")
+		b.WriteString("In your Claude Code MCP settings (`.claude/mcp.json` or global):\n\n")
+		b.WriteString("```json\n")
+		b.WriteString("{\n")
+		b.WriteString("  \"mcpServers\": {\n")
+		b.WriteString("    \"agent-notes\": {\n")
+		b.WriteString("      \"command\": \"cupa\",\n")
+		b.WriteString("      \"env\": { \"CLICKUP_TOKEN\": \"pk_...\" }\n")
+		b.WriteString("    }\n")
+		b.WriteString("  }\n")
+		b.WriteString("}\n")
+		b.WriteString("```\n\n")
+	} else {
+		b.WriteString("## CLICKUP_TOKEN: set\n\n")
+	}
+
+	// Check .cupa.yaml
+	_, err := os.Stat(configFile)
+	if err != nil {
+		b.WriteString("## Config file: not found (using defaults)\n\n")
+	} else {
+		b.WriteString("## Config file: " + configFile + "\n\n")
+	}
+
+	b.WriteString("## Active configuration\n\n")
+	b.WriteString("- **Workspace ID:** " + cfg.WorkspaceID + "\n")
+	b.WriteString("- **Channel ID:** " + cfg.ChannelID + "\n")
+	if cfg.Sender != "" {
+		b.WriteString("- **Sender prefix:** " + cfg.Sender + "\n")
+	} else {
+		b.WriteString("- **Sender prefix:** (none — messages posted without prefix)\n")
+	}
+	b.WriteString("\n")
+
+	b.WriteString("### Targeting a different channel\n\n")
+	b.WriteString("Create a `.cupa.yaml` file in your project root:\n\n")
+	b.WriteString("```yaml\n")
+	b.WriteString("workspace_id: \"YOUR_WORKSPACE_ID\"\n")
+	b.WriteString("channel_id: \"YOUR_CHANNEL_ID\"\n")
+	b.WriteString("sender: \"Agent for ProjectName\"\n")
+	b.WriteString("```\n\n")
+	b.WriteString("When `sender` is set, all posted messages are automatically prefixed with `[sender] `.\n\n")
+	b.WriteString("To find these IDs:\n\n")
+	b.WriteString("1. **Workspace ID:** ClickUp Settings → Workspaces → look at the URL: `app.clickup.com/{workspace_id}/...`\n")
+	b.WriteString("2. **Channel ID:** Open the Chat channel in ClickUp → the channel ID is in the URL after `/chat/`\n")
+
+	// Try a connectivity check if token is set
+	if token != "" {
+		b.WriteString("\n## Connectivity\n\n")
+		req, reqErr := http.NewRequest(http.MethodGet, clickupBase+"/user", nil)
+		if reqErr == nil {
+			req.Header.Set("Authorization", token)
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr != nil {
+				b.WriteString("- **API check:** FAILED — " + doErr.Error() + "\n")
+			} else {
+				_ = resp.Body.Close()
+				if resp.StatusCode == 200 {
+					b.WriteString("- **API check:** OK (authenticated)\n")
+				} else {
+					b.WriteString(fmt.Sprintf("- **API check:** FAILED — HTTP %d (token may be invalid or expired)\n", resp.StatusCode))
+				}
+			}
+		}
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: b.String()}},
+	}, nil, nil
+}
+
 // --- Tool: post_note ---
 
 type postNoteArgs struct {
@@ -150,8 +303,13 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 		return toolError("content is required"), nil, nil
 	}
 
-	body := map[string]string{"content": args.Content}
-	data, err := clickupRequest(ctx, http.MethodPost, messagesPath, body)
+	content := args.Content
+	if cfg.Sender != "" {
+		content = "[" + cfg.Sender + "] " + content
+	}
+
+	body := map[string]string{"content": content}
+	data, err := clickupRequest(ctx, http.MethodPost, messagesPath(), body)
 	if err != nil {
 		return toolError(err.Error()), nil, nil
 	}
@@ -161,10 +319,21 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 		return toolError(fmt.Sprintf("parse response: %v", err)), nil, nil
 	}
 
+	// Return recent messages alongside confirmation so the agent has context.
+	var result strings.Builder
+	fmt.Fprintf(&result, "Posted message %s\n\n", posted.ID)
+
+	recent, readErr := readMessages(ctx)
+	if readErr == nil && len(recent) > 0 {
+		if len(recent) > 5 {
+			recent = recent[:5]
+		}
+		result.WriteString("## Recent messages\n\n")
+		result.WriteString(formatMessages(recent))
+	}
+
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Posted message %s", posted.ID)},
-		},
+		Content: []mcp.Content{&mcp.TextContent{Text: result.String()}},
 	}, nil, nil
 }
 
@@ -254,10 +423,19 @@ func handleWaitForReply(ctx context.Context, _ *mcp.CallToolRequest, args waitFo
 func main() {
 	log.SetOutput(os.Stderr)
 
+	if err := loadConfig(); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
 		Version: "0.1.0",
 	}, nil)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "check_setup",
+		Description: "Check cupa configuration status and show setup instructions for ClickUp token, workspace, and channel",
+	}, handleCheckSetup)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "post_note",

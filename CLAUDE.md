@@ -17,7 +17,8 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 
 | Tool | Description |
 |------|-------------|
-| `post_note` | Post a message to Agent Notes channel |
+| `check_setup` | Check config status, show setup instructions for token/workspace/channel |
+| `post_note` | Post a message (auto-prefixed with sender if configured), returns recent messages for context |
 | `read_notes` | Read recent messages (newest first) |
 | `wait_for_reply` | Long-poll until a new message appears after a given message ID |
 
@@ -30,6 +31,19 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 - **Send:** `POST /workspaces/{ws}/chat/channels/{ch}/messages` body `{"content": "..."}`
 - **Read:** `GET /workspaces/{ws}/chat/channels/{ch}/messages` returns `{"data": [...]}`
 - Each message has: `id`, `content`, `date` (unix ms), `user_id`
+
+### Project config (`.cupa.yaml`)
+
+Optional file in the working directory to override the default workspace/channel:
+
+```yaml
+workspace_id: "9011518645"
+channel_id: "6-901113290332-8"
+sender: "Agent for ProjectName"
+```
+
+- If absent, the defaults above are used (Agent Notes channel).
+- When `sender` is set, all posted messages are prefixed with `[sender] `.
 
 ### MCP config (end-user)
 
@@ -49,7 +63,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 - Keep it simple — single `main.go` or minimal packages
 - No external dependencies beyond the Go standard library and an MCP SDK if needed
 - Cross-platform: must build for darwin-arm64, windows-amd64
-- `CLICKUP_TOKEN` env var is the only configuration
+- `CLICKUP_TOKEN` env var for auth; `.cupa.yaml` for workspace/channel targeting
 - Always run `golangci-lint run --fix ./...` after modifying Go code
 - Always run `shellcheck` after modifying shell scripts
 

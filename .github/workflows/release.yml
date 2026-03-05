@@ -20,42 +20,11 @@ jobs:
         with:
           go-version: "1.26.0"
 
-      - name: Build binaries
-        run: |
-          mkdir -p dist
-          GOOS=darwin GOARCH=arm64 go build -o dist/cupa-darwin-arm64 .
-          GOOS=windows GOARCH=amd64 go build -o dist/cupa-windows-amd64.exe .
-
-      - name: Package archives
-        run: |
-          cd dist
-          tar czf cupa-darwin-arm64.tar.gz cupa-darwin-arm64
-          zip cupa-windows-amd64.zip cupa-windows-amd64.exe
-
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum cupa-darwin-arm64.tar.gz > cupa-darwin-arm64.tar.gz.sha256
-          sha256sum cupa-windows-amd64.zip > cupa-windows-amd64.zip.sha256
-
-      - name: Generate release notes
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            git log --pretty=format:"- %s" "$PREV_TAG..$TAG" > release-notes.md
-          else
-            git log --pretty=format:"- %s" "$TAG" > release-notes.md
-          fi
-
-      - uses: softprops/action-gh-release@v2
+      - uses: goreleaser/goreleaser-action@v6
         with:
-          body_path: release-notes.md
-          files: |
-            dist/cupa-darwin-arm64.tar.gz
-            dist/cupa-darwin-arm64.tar.gz.sha256
-            dist/cupa-windows-amd64.zip
-            dist/cupa-windows-amd64.zip.sha256
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   update-homebrew:
     needs: build
@@ -73,7 +42,7 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
-          curl -sL "$BASE_URL/cupa-darwin-arm64.tar.gz.sha256" -o arm64.sha256
+          curl -sL "$BASE_URL/checksums.txt" -o checksums.txt
 
       - name: Update Homebrew tap
         env:
@@ -81,7 +50,7 @@ jobs:
         run: |
           TAG=${{ steps.release.outputs.tag }}
           VERSION=${{ steps.release.outputs.version }}
-          ARM64_SHA=$(awk '{print $1}' arm64.sha256)
+          ARM64_SHA=$(grep cupa_darwin_arm64.tar.gz checksums.txt | awk '{print $1}')
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-cupa.git" tap
@@ -95,12 +64,12 @@ jobs:
             license "MIT"
 
             on_arm do
-              url "$BASE_URL/cupa-darwin-arm64.tar.gz"
+              url "$BASE_URL/cupa_darwin_arm64.tar.gz"
               sha256 "$ARM64_SHA"
             end
 
             def install
-              bin.install "cupa-darwin-arm64" => "cupa"
+              bin.install "cupa" => "cupa"
             end
           end
           FORMULA
@@ -128,7 +97,7 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
-          curl -sL "$BASE_URL/cupa-windows-amd64.zip.sha256" -o windows.sha256
+          curl -sL "$BASE_URL/checksums.txt" -o checksums.txt
 
       - name: Update Scoop bucket
         env:
@@ -136,7 +105,7 @@ jobs:
         run: |
           TAG=${{ steps.release.outputs.tag }}
           VERSION=${{ steps.release.outputs.version }}
-          WIN_SHA=$(awk '{print $1}' windows.sha256)
+          WIN_SHA=$(grep cupa_windows_amd64.zip checksums.txt | awk '{print $1}')
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-cupa.git" bucket
@@ -147,11 +116,11 @@ jobs:
             "version": "$VERSION",
             "architecture": {
               "64bit": {
-                "url": "$BASE_URL/cupa-windows-amd64.zip",
+                "url": "$BASE_URL/cupa_windows_amd64.zip",
                 "hash": "$WIN_SHA"
               }
             },
-            "bin": "cupa-windows-amd64.exe"
+            "bin": "cupa.exe"
           }
           MANIFEST
 

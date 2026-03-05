@@ -108,21 +108,25 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func TestHandlePostNote(t *testing.T) {
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
+		if r.Method == http.MethodPost {
+			if r.Header.Get("Authorization") != "test-token" {
+				t.Errorf("expected raw token auth, got %q", r.Header.Get("Authorization"))
+			}
+			var body struct{ Content string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Content != "hello" {
+				t.Errorf("expected content 'hello', got %q", body.Content)
+			}
+			resp := message{ID: json.Number("999"), Content: body.Content, Date: json.Number("1704067200000"), UserID: "u1"}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
 		}
-		if r.Header.Get("Authorization") != "test-token" {
-			t.Errorf("expected raw token auth, got %q", r.Header.Get("Authorization"))
-		}
-		var body struct{ Content string }
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body.Content != "hello" {
-			t.Errorf("expected content 'hello', got %q", body.Content)
-		}
-		resp := message{ID: json.Number("999"), Content: body.Content, Date: json.Number("1704067200000"), UserID: "u1"}
-		_ = json.NewEncoder(w).Encode(resp)
+		// GET: return recent messages for the post-send context.
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
+			{ID: json.Number("999"), Content: "hello", Date: json.Number("1704067200000"), UserID: "u1"},
+		}})
 	}))
 
 	result, _, err := handlePostNote(context.Background(), nil, postNoteArgs{Content: "hello"})
@@ -133,8 +137,43 @@ func TestHandlePostNote(t *testing.T) {
 		t.Fatalf("unexpected tool error: %v", result.Content)
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
-	if text != "Posted message 999" {
-		t.Errorf("unexpected result: %s", text)
+	if !contains(text, "Posted message 999") {
+		t.Errorf("expected 'Posted message 999' in result, got: %s", text)
+	}
+	if !contains(text, "Recent messages") {
+		t.Errorf("expected recent messages section in result, got: %s", text)
+	}
+}
+
+func TestHandlePostNoteWithSender(t *testing.T) {
+	oldSender := cfg.Sender
+	cfg.Sender = "Agent for TestProject"
+	t.Cleanup(func() { cfg.Sender = oldSender })
+
+	var postedContent string
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body struct{ Content string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			postedContent = body.Content
+			resp := message{ID: json.Number("1000"), Content: body.Content, Date: json.Number("1704067200000"), UserID: "u1"}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{}})
+	}))
+
+	result, _, err := handlePostNote(context.Background(), nil, postNoteArgs{Content: "status update"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %v", result.Content)
+	}
+	if postedContent != "[Agent for TestProject] status update" {
+		t.Errorf("expected sender prefix, got: %s", postedContent)
 	}
 }
 
@@ -275,12 +314,12 @@ func TestClickupRequestAPIError(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": 401, "message": "Token invalid"})
 	}))
 
-	_, err := clickupRequest(context.Background(), http.MethodGet, messagesPath, nil)
+	_, err := clickupRequest(context.Background(), http.MethodGet, messagesPath(), nil)
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
-	if !contains(err.Error(), "Token invalid") {
-		t.Errorf("expected 'Token invalid' in error, got: %v", err)
+	if !contains(err.Error(), "Token invalid") || !contains(err.Error(), "check_setup") {
+		t.Errorf("expected actionable 401 error with 'Token invalid' and 'check_setup', got: %v", err)
 	}
 }
 
