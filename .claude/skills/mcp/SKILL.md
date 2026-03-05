@@ -30,7 +30,7 @@ MCP servers communicate via JSON-RPC 2.0 over stdio (stdin/stdout). Claude Code 
 ### Response (server → client on stdout)
 
 ```json
-{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "clickup-agent-chat", "version": "0.1.0"}}}
+{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "cupa", "version": "0.1.0"}}}
 {"jsonrpc": "2.0", "id": 2, "result": {"tools": [...]}}
 {"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "Posted message 123"}]}}
 ```

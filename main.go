@@ -255,7 +255,7 @@ func main() {
 	log.SetOutput(os.Stderr)
 
 	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "clickup-agent-chat",
+		Name:    "cupa",
 		Version: "0.1.0",
 	}, nil)
 

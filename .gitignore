@@ -1,5 +1,5 @@
 # Binaries
-clickup-agent-chat
+cupa
 *.exe
 dist/
 

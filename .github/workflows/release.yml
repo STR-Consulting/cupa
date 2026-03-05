@@ -23,20 +23,20 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist
-          GOOS=darwin GOARCH=arm64 go build -o dist/clickup-agent-chat-darwin-arm64 .
-          GOOS=windows GOARCH=amd64 go build -o dist/clickup-agent-chat-windows-amd64.exe .
+          GOOS=darwin GOARCH=arm64 go build -o dist/cupa-darwin-arm64 .
+          GOOS=windows GOARCH=amd64 go build -o dist/cupa-windows-amd64.exe .
 
       - name: Package archives
         run: |
           cd dist
-          tar czf clickup-agent-chat-darwin-arm64.tar.gz clickup-agent-chat-darwin-arm64
-          zip clickup-agent-chat-windows-amd64.zip clickup-agent-chat-windows-amd64.exe
+          tar czf cupa-darwin-arm64.tar.gz cupa-darwin-arm64
+          zip cupa-windows-amd64.zip cupa-windows-amd64.exe
 
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum clickup-agent-chat-darwin-arm64.tar.gz > clickup-agent-chat-darwin-arm64.tar.gz.sha256
-          sha256sum clickup-agent-chat-windows-amd64.zip > clickup-agent-chat-windows-amd64.zip.sha256
+          sha256sum cupa-darwin-arm64.tar.gz > cupa-darwin-arm64.tar.gz.sha256
+          sha256sum cupa-windows-amd64.zip > cupa-windows-amd64.zip.sha256
 
       - name: Generate release notes
         run: |
@@ -52,10 +52,10 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
-            dist/clickup-agent-chat-darwin-arm64.tar.gz
-            dist/clickup-agent-chat-darwin-arm64.tar.gz.sha256
-            dist/clickup-agent-chat-windows-amd64.zip
-            dist/clickup-agent-chat-windows-amd64.zip.sha256
+            dist/cupa-darwin-arm64.tar.gz
+            dist/cupa-darwin-arm64.tar.gz.sha256
+            dist/cupa-windows-amd64.zip
+            dist/cupa-windows-amd64.zip.sha256
 
   update-homebrew:
     needs: build
@@ -73,7 +73,7 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
-          curl -sL "$BASE_URL/clickup-agent-chat-darwin-arm64.tar.gz.sha256" -o arm64.sha256
+          curl -sL "$BASE_URL/cupa-darwin-arm64.tar.gz.sha256" -o arm64.sha256
 
       - name: Update Homebrew tap
         env:
@@ -84,23 +84,23 @@ jobs:
           ARM64_SHA=$(awk '{print $1}' arm64.sha256)
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-clickup-agent-chat.git" tap
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-cupa.git" tap
           mkdir -p tap/Formula
 
-          cat > tap/Formula/clickup-agent-chat.rb << FORMULA
-          class ClickupAgentChat < Formula
+          cat > tap/Formula/cupa.rb << FORMULA
+          class Cupa < Formula
             desc "MCP server for ClickUp Agent Notes cross-agent conversation"
             homepage "https://github.com/${{ github.repository }}"
             version "$VERSION"
             license "MIT"
 
             on_arm do
-              url "$BASE_URL/clickup-agent-chat-darwin-arm64.tar.gz"
+              url "$BASE_URL/cupa-darwin-arm64.tar.gz"
               sha256 "$ARM64_SHA"
             end
 
             def install
-              bin.install "clickup-agent-chat-darwin-arm64" => "clickup-agent-chat"
+              bin.install "cupa-darwin-arm64" => "cupa"
             end
           end
           FORMULA
@@ -128,7 +128,7 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
-          curl -sL "$BASE_URL/clickup-agent-chat-windows-amd64.zip.sha256" -o windows.sha256
+          curl -sL "$BASE_URL/cupa-windows-amd64.zip.sha256" -o windows.sha256
 
       - name: Update Scoop bucket
         env:
@@ -139,19 +139,19 @@ jobs:
           WIN_SHA=$(awk '{print $1}' windows.sha256)
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-clickup-agent-chat.git" bucket
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-cupa.git" bucket
           mkdir -p bucket/bucket
 
-          cat > bucket/bucket/clickup-agent-chat.json << MANIFEST
+          cat > bucket/bucket/cupa.json << MANIFEST
           {
             "version": "$VERSION",
             "architecture": {
               "64bit": {
-                "url": "$BASE_URL/clickup-agent-chat-windows-amd64.zip",
+                "url": "$BASE_URL/cupa-windows-amd64.zip",
                 "hash": "$WIN_SHA"
               }
             },
-            "bin": "clickup-agent-chat-windows-amd64.exe"
+            "bin": "cupa-windows-amd64.exe"
           }
           MANIFEST
 

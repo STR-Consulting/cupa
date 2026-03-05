@@ -1,4 +1,4 @@
-module github.com/STR-Consulting/clickup-agent-chat
+module github.com/STR-Consulting/cupa
 
 go 1.25.0
 

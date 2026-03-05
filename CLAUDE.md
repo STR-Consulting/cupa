@@ -1,12 +1,12 @@
-# clickup-agent-chat
+# cupa
 
 MCP server in Go that exposes ClickUp Agent Notes as native Claude Code tools. Enables live cross-agent conversation via the Agent Notes channel.
 
 ## Project Info
 
 - **Language:** Go
-- **Binary:** `clickup-agent-chat` (MCP server, stdio transport)
-- **Repo:** github.com/STR-Consulting/clickup-agent-chat
+- **Binary:** `cupa` (MCP server, stdio transport)
+- **Repo:** github.com/STR-Consulting/cupa
 - **Parent issue:** zen-ovs in pacer/core
 
 ## Architecture
@@ -37,7 +37,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 {
   "mcpServers": {
     "agent-notes": {
-      "command": "clickup-agent-chat",
+      "command": "cupa",
       "env": { "CLICKUP_TOKEN": "pk_..." }
     }
   }
@@ -48,7 +48,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 
 - Keep it simple — single `main.go` or minimal packages
 - No external dependencies beyond the Go standard library and an MCP SDK if needed
-- Cross-platform: must build for darwin-arm64, darwin-amd64, windows-amd64
+- Cross-platform: must build for darwin-arm64, windows-amd64
 - `CLICKUP_TOKEN` env var is the only configuration
 - Always run `golangci-lint run --fix ./...` after modifying Go code
 - Always run `shellcheck` after modifying shell scripts
@@ -56,16 +56,15 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 ## Build & Test
 
 ```bash
-go build -o clickup-agent-chat .
+go build -o cupa .
 go test ./...
 ```
 
 ### Cross-compile
 
 ```bash
-GOOS=darwin GOARCH=arm64 go build -o dist/clickup-agent-chat-darwin-arm64 .
-GOOS=darwin GOARCH=amd64 go build -o dist/clickup-agent-chat-darwin-amd64 .
-GOOS=windows GOARCH=amd64 go build -o dist/clickup-agent-chat-windows-amd64.exe .
+GOOS=darwin GOARCH=arm64 go build -o dist/cupa-darwin-arm64 .
+GOOS=windows GOARCH=amd64 go build -o dist/cupa-windows-amd64.exe .
 ```
 
 ## Skill Reference
