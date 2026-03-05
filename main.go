@@ -441,6 +441,146 @@ func handleWaitForReply(ctx context.Context, _ *mcp.CallToolRequest, args waitFo
 	}
 }
 
+// --- Chat session state ---
+
+var (
+	chatMu     sync.Mutex
+	chatCancel context.CancelFunc
+	chatLastID int64
+)
+
+// --- Tool: start_chat ---
+
+type startChatArgs struct {
+	Message        string `json:"message" jsonschema:"Message to send to start or continue the conversation. If empty, just waits for the next reply without posting."`
+	TimeoutSeconds int    `json:"timeout_seconds" jsonschema:"How long to wait for a reply in seconds (default 120)"`
+}
+
+func handleStartChat(ctx context.Context, _ *mcp.CallToolRequest, args startChatArgs) (*mcp.CallToolResult, any, error) {
+	chatMu.Lock()
+	if chatCancel != nil {
+		chatMu.Unlock()
+		return toolError("A chat session is already active. Call stop_chat first, or wait for it to return."), nil, nil
+	}
+	chatCtx, cancel := context.WithCancel(ctx)
+	chatCancel = cancel
+	chatMu.Unlock()
+
+	defer func() {
+		cancel()
+		chatMu.Lock()
+		chatCancel = nil
+		chatMu.Unlock()
+	}()
+
+	// Post message if provided.
+	if args.Message != "" {
+		content := args.Message
+		if cfg.Project != "" {
+			content = "[" + cfg.Project + "] " + content
+		}
+		data, err := clickupRequest(chatCtx, http.MethodPost, messagesPath(), map[string]string{"content": content})
+		if err != nil {
+			return toolError(err.Error()), nil, nil
+		}
+		var posted message
+		if err := json.Unmarshal(data, &posted); err == nil {
+			if id, _ := posted.ID.Int64(); id > 0 {
+				chatMu.Lock()
+				chatLastID = id
+				chatMu.Unlock()
+			}
+		}
+	} else {
+		// No message — if no prior session, snapshot the current latest ID.
+		chatMu.Lock()
+		needSnapshot := chatLastID == 0
+		chatMu.Unlock()
+		if needSnapshot {
+			msgs, err := readMessages(chatCtx)
+			if err != nil {
+				return toolError(err.Error()), nil, nil
+			}
+			if len(msgs) > 0 {
+				if id, _ := msgs[0].ID.Int64(); id > 0 {
+					chatMu.Lock()
+					chatLastID = id
+					chatMu.Unlock()
+				}
+			}
+		}
+	}
+
+	// Poll for a reply.
+	timeout := args.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 120
+	}
+	deadline := time.After(time.Duration(timeout) * time.Second)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		msgs, err := readMessages(chatCtx)
+		if err == nil {
+			chatMu.Lock()
+			afterID := chatLastID
+			chatMu.Unlock()
+
+			var newMsgs []message
+			for _, m := range msgs {
+				if id, _ := m.ID.Int64(); id > afterID {
+					newMsgs = append(newMsgs, m)
+				}
+			}
+
+			if len(newMsgs) > 0 {
+				slices.Reverse(newMsgs)
+				// Update lastID to the newest message.
+				if id, _ := newMsgs[len(newMsgs)-1].ID.Int64(); id > 0 {
+					chatMu.Lock()
+					chatLastID = id
+					chatMu.Unlock()
+				}
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: formatMessages(newMsgs)}},
+				}, nil, nil
+			}
+		}
+
+		select {
+		case <-chatCtx.Done():
+			return toolError("Chat session stopped"), nil, nil
+		case <-deadline:
+			return toolError(fmt.Sprintf("No reply received within %d seconds", timeout)), nil, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+// --- Tool: stop_chat ---
+
+type stopChatArgs struct{}
+
+func handleStopChat(_ context.Context, _ *mcp.CallToolRequest, _ stopChatArgs) (*mcp.CallToolResult, any, error) {
+	chatMu.Lock()
+	cancel := chatCancel
+	chatCancel = nil
+	chatLastID = 0
+	chatMu.Unlock()
+
+	if cancel == nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "No active chat session"}},
+		}, nil, nil
+	}
+
+	cancel()
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "Chat session stopped"}},
+	}, nil, nil
+}
+
 func main() {
 	log.SetOutput(os.Stderr)
 
@@ -450,11 +590,12 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.3.0",
+		Version: "0.5.0",
 	}, &mcp.ServerOptions{
 		Instructions: "cupa is a cross-agent messaging channel via ClickUp Chat. " +
 			"Use post_note to send messages and read_notes to see recent conversation. " +
-			"Messages are automatically prefixed with the project name. " +
+			"For interactive conversations with another agent, use start_chat (run it as a background task) " +
+			"and stop_chat when done. Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.",
 	})
 
@@ -477,6 +618,20 @@ func main() {
 		Name:        "wait_for_reply",
 		Description: "Long-poll until a new message appears after a given message ID",
 	}, handleWaitForReply)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "start_chat",
+		Description: "Start an interactive chat with another agent via the Agent Notes channel. " +
+			"Posts your message and polls until a reply arrives, then returns the reply. " +
+			"IMPORTANT: Call this as a background task so you can continue working while waiting for a reply. " +
+			"To continue the conversation, call start_chat again with your next message — it remembers where you left off. " +
+			"Call stop_chat when the conversation is finished.",
+	}, handleStartChat)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "stop_chat",
+		Description: "Stop an active chat session started with start_chat. Cancels any pending wait for a reply and resets the conversation state.",
+	}, handleStopChat)
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("Server failed: %v", err)

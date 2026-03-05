@@ -323,6 +323,156 @@ func TestClickupRequestAPIError(t *testing.T) {
 	}
 }
 
+func TestHandleStartChatPostsAndWaitsForReply(t *testing.T) {
+	oldProject := cfg.Project
+	cfg.Project = "testproj"
+	t.Cleanup(func() { cfg.Project = oldProject })
+
+	callCount := 0
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body struct{ Content string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if !contains(body.Content, "[testproj]") {
+				t.Errorf("expected project prefix, got: %s", body.Content)
+			}
+			resp := message{ID: json.Number("500"), Content: body.Content, Date: json.Number("1704067200000"), UserID: "u1"}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		// GET: first call returns no new messages, second call returns a reply.
+		callCount++
+		if callCount <= 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
+				{ID: json.Number("500"), Content: "original", Date: json.Number("1704067200000"), UserID: "u1"},
+			}})
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
+				{ID: json.Number("501"), Content: "reply from other agent", Date: json.Number("1704067201000"), UserID: "u2"},
+				{ID: json.Number("500"), Content: "original", Date: json.Number("1704067200000"), UserID: "u1"},
+			}})
+		}
+	}))
+
+	// Reset chat state.
+	chatMu.Lock()
+	chatCancel = nil
+	chatLastID = 0
+	chatMu.Unlock()
+
+	result, _, err := handleStartChat(context.Background(), nil, startChatArgs{
+		Message:        "hello other agent",
+		TimeoutSeconds: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "reply from other agent") {
+		t.Errorf("expected reply in result, got: %s", text)
+	}
+}
+
+func TestHandleStartChatAlreadyActive(t *testing.T) {
+	t.Setenv("CLICKUP_TOKEN", "test-token")
+
+	chatMu.Lock()
+	_, cancel := context.WithCancel(context.Background())
+	chatCancel = cancel
+	chatMu.Unlock()
+	t.Cleanup(func() {
+		cancel()
+		chatMu.Lock()
+		chatCancel = nil
+		chatLastID = 0
+		chatMu.Unlock()
+	})
+
+	result, _, err := handleStartChat(context.Background(), nil, startChatArgs{Message: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for already active session")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "already active") {
+		t.Errorf("expected 'already active' error, got: %s", text)
+	}
+}
+
+func TestHandleStartChatCancelled(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{}})
+	}))
+
+	chatMu.Lock()
+	chatCancel = nil
+	chatLastID = 0
+	chatMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	result, _, err := handleStartChat(ctx, nil, startChatArgs{TimeoutSeconds: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestHandleStopChatNoSession(t *testing.T) {
+	chatMu.Lock()
+	chatCancel = nil
+	chatLastID = 0
+	chatMu.Unlock()
+
+	result, _, err := handleStopChat(context.Background(), nil, stopChatArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "No active chat session") {
+		t.Errorf("expected 'No active chat session', got: %s", text)
+	}
+}
+
+func TestHandleStopChatCancelsSession(t *testing.T) {
+	t.Setenv("CLICKUP_TOKEN", "test-token")
+
+	chatMu.Lock()
+	_, cancel := context.WithCancel(context.Background())
+	chatCancel = cancel
+	chatLastID = 100
+	chatMu.Unlock()
+
+	result, _, err := handleStopChat(context.Background(), nil, stopChatArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "Chat session stopped") {
+		t.Errorf("expected 'Chat session stopped', got: %s", text)
+	}
+
+	// Verify state was reset.
+	chatMu.Lock()
+	if chatCancel != nil {
+		t.Error("chatCancel should be nil after stop")
+	}
+	if chatLastID != 0 {
+		t.Error("chatLastID should be 0 after stop")
+	}
+	chatMu.Unlock()
+}
+
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
