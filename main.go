@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -25,8 +27,12 @@ const (
 	configFile     = ".cupa.yaml"
 	minRequestGap  = 700 * time.Millisecond // ~1.5 req/s
 	defaultLimit   = 20
-	defaultTimeout = 60
-	pollInterval   = 5 * time.Second
+	defaultTimeout     = 60
+	defaultChatTimeout = 120
+	pollInterval       = 5 * time.Second
+
+	postTypePost    = "post"
+	contentFormatMD = "text/md"
 )
 
 type config struct {
@@ -67,7 +73,7 @@ func loadConfig() error {
 
 	f, err := os.Open(configFile)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("open %s: %w", configFile, err)
@@ -218,6 +224,23 @@ func formatMessages(msgs []message) string {
 	return b.String()
 }
 
+func messagesAfter(msgs []message, afterID int64) []message {
+	var out []message
+	for _, m := range msgs {
+		if id, _ := m.ID.Int64(); id > afterID {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func prefixProject(s string) string {
+	if cfg.Project != "" {
+		return "[" + cfg.Project + "] " + s
+	}
+	return s
+}
+
 func toolError(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
@@ -324,12 +347,7 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 		return toolError("content is required"), nil, nil
 	}
 
-	content := args.Content
-	if cfg.Project != "" {
-		content = "[" + cfg.Project + "] " + content
-	}
-
-	body := map[string]string{"content": content}
+	body := map[string]string{"content": prefixProject(args.Content)}
 	data, err := clickupRequest(ctx, http.MethodPost, messagesPath(), body)
 	if err != nil {
 		return toolError(err.Error()), nil, nil
@@ -346,9 +364,7 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 
 	recent, readErr := readMessages(ctx)
 	if readErr == nil && len(recent) > 0 {
-		if len(recent) > 5 {
-			recent = recent[:5]
-		}
+		recent = recent[:min(len(recent), 5)]
 		result.WriteString("## Recent messages\n\n")
 		result.WriteString(formatMessages(recent))
 	}
@@ -414,14 +430,7 @@ func handleWaitForReply(ctx context.Context, _ *mcp.CallToolRequest, args waitFo
 		}
 
 		// Messages are newest-first; find any with ID > after_message_id.
-		var newMessages []message
-		for _, m := range messages {
-			id, _ := m.ID.Int64()
-			if id > args.AfterMessageID {
-				newMessages = append(newMessages, m)
-			}
-		}
-
+		newMessages := messagesAfter(messages, args.AfterMessageID)
 		if len(newMessages) > 0 {
 			// Return in chronological order (reverse of newest-first).
 			slices.Reverse(newMessages)
@@ -449,27 +458,14 @@ type postSubtype struct {
 	Name string `json:"name"`
 }
 
-var (
-	subtypesMu    sync.Mutex
-	cachedSubtype string // cached "Update" subtype ID
-)
-
 func subtypesPath() string {
 	return "/workspaces/" + cfg.WorkspaceID + "/comments/types/post/subtypes"
 }
 
-// resolveSubtypeID fetches available post subtypes and returns the "Update" subtype ID.
+// fetchSubtypeID fetches available post subtypes and returns the "Update" subtype ID.
 // Falls back to the first available subtype if "Update" isn't found.
-func resolveSubtypeID(ctx context.Context) (string, error) {
-	subtypesMu.Lock()
-	if cachedSubtype != "" {
-		id := cachedSubtype
-		subtypesMu.Unlock()
-		return id, nil
-	}
-	subtypesMu.Unlock()
-
-	data, err := clickupRequest(ctx, http.MethodGet, subtypesPath(), nil)
+func fetchSubtypeID() (string, error) {
+	data, err := clickupRequest(context.Background(), http.MethodGet, subtypesPath(), nil)
 	if err != nil {
 		return "", fmt.Errorf("fetch post subtypes: %w", err)
 	}
@@ -491,12 +487,10 @@ func resolveSubtypeID(ctx context.Context) (string, error) {
 		}
 	}
 
-	subtypesMu.Lock()
-	cachedSubtype = chosen.ID
-	subtypesMu.Unlock()
-
 	return chosen.ID, nil
 }
+
+var resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
 
 type postContentArgs struct {
 	Title   string `json:"title" jsonschema:"Title for the post (max 255 chars)"`
@@ -511,20 +505,17 @@ func handlePostContent(ctx context.Context, _ *mcp.CallToolRequest, args postCon
 		return toolError("title is required"), nil, nil
 	}
 
-	subtypeID, err := resolveSubtypeID(ctx)
+	subtypeID, err := resolveSubtypeID()
 	if err != nil {
 		return toolError(err.Error()), nil, nil
 	}
 
-	title := args.Title
-	if cfg.Project != "" {
-		title = "[" + cfg.Project + "] " + title
-	}
+	title := prefixProject(args.Title)
 
 	body := map[string]any{
-		"type":           "post",
+		"type":           postTypePost,
 		"content":        args.Content,
-		"content_format": "text/md",
+		"content_format": contentFormatMD,
 		"post_data": map[string]any{
 			"title":   title,
 			"subtype": map[string]string{"id": subtypeID},
@@ -582,11 +573,7 @@ func handleStartChat(ctx context.Context, _ *mcp.CallToolRequest, args startChat
 
 	// Post message if provided.
 	if args.Message != "" {
-		content := args.Message
-		if cfg.Project != "" {
-			content = "[" + cfg.Project + "] " + content
-		}
-		data, err := clickupRequest(chatCtx, http.MethodPost, messagesPath(), map[string]string{"content": content})
+		data, err := clickupRequest(chatCtx, http.MethodPost, messagesPath(), map[string]string{"content": prefixProject(args.Message)})
 		if err != nil {
 			return toolError(err.Error()), nil, nil
 		}
@@ -621,7 +608,7 @@ func handleStartChat(ctx context.Context, _ *mcp.CallToolRequest, args startChat
 	// Poll for a reply.
 	timeout := args.TimeoutSeconds
 	if timeout <= 0 {
-		timeout = 120
+		timeout = defaultChatTimeout
 	}
 	deadline := time.After(time.Duration(timeout) * time.Second)
 	ticker := time.NewTicker(pollInterval)
@@ -634,13 +621,7 @@ func handleStartChat(ctx context.Context, _ *mcp.CallToolRequest, args startChat
 			afterID := chatLastID
 			chatMu.Unlock()
 
-			var newMsgs []message
-			for _, m := range msgs {
-				if id, _ := m.ID.Int64(); id > afterID {
-					newMsgs = append(newMsgs, m)
-				}
-			}
-
+			newMsgs := messagesAfter(msgs, afterID)
 			if len(newMsgs) > 0 {
 				slices.Reverse(newMsgs)
 				// Update lastID to the newest message.

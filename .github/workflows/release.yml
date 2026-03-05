@@ -50,7 +50,7 @@ jobs:
         run: |
           TAG=${{ steps.release.outputs.tag }}
           VERSION=${{ steps.release.outputs.version }}
-          ARM64_SHA=$(grep cupa_darwin_arm64.tar.gz checksums.txt | awk '{print $1}')
+          ARM64_SHA=$(grep "cupa_${VERSION}_darwin_arm64.tar.gz" checksums.txt | awk '{print $1}')
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-cupa.git" tap
@@ -64,7 +64,7 @@ jobs:
             license "MIT"
 
             on_arm do
-              url "$BASE_URL/cupa_darwin_arm64.tar.gz"
+              url "$BASE_URL/cupa_${VERSION}_darwin_arm64.tar.gz"
               sha256 "$ARM64_SHA"
             end
 
@@ -105,7 +105,7 @@ jobs:
         run: |
           TAG=${{ steps.release.outputs.tag }}
           VERSION=${{ steps.release.outputs.version }}
-          WIN_SHA=$(grep cupa_windows_amd64.zip checksums.txt | awk '{print $1}')
+          WIN_SHA=$(grep "cupa_${VERSION}_windows_amd64.zip" checksums.txt | awk '{print $1}')
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-cupa.git" bucket
@@ -116,7 +116,7 @@ jobs:
             "version": "$VERSION",
             "architecture": {
               "64bit": {
-                "url": "$BASE_URL/cupa_windows_amd64.zip",
+                "url": "$BASE_URL/cupa_${VERSION}_windows_amd64.zip",
                 "hash": "$WIN_SHA"
               }
             },

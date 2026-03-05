@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -328,10 +330,8 @@ func TestHandlePostContent(t *testing.T) {
 	cfg.Project = "myapp"
 	t.Cleanup(func() { cfg.Project = oldProject })
 
-	// Reset cached subtype.
-	subtypesMu.Lock()
-	cachedSubtype = ""
-	subtypesMu.Unlock()
+	// Reset the OnceValues so it re-fetches.
+	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
 
 	var postedBody map[string]any
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -415,9 +415,7 @@ func TestHandlePostContentEmptyFields(t *testing.T) {
 }
 
 func TestHandlePostContentCachesSubtype(t *testing.T) {
-	subtypesMu.Lock()
-	cachedSubtype = ""
-	subtypesMu.Unlock()
+	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
 
 	subtypeFetches := 0
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -597,6 +595,129 @@ func TestHandleStopChatCancelsSession(t *testing.T) {
 		t.Error("chatLastID should be 0 after stop")
 	}
 	chatMu.Unlock()
+}
+
+func TestLoadConfigDefaults(t *testing.T) {
+	// Run in a temp dir with no .cupa.yaml.
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkspaceID != "9011518645" {
+		t.Errorf("expected default workspace, got: %s", cfg.WorkspaceID)
+	}
+	if cfg.ChannelID != "6-901113290332-8" {
+		t.Errorf("expected default channel, got: %s", cfg.ChannelID)
+	}
+}
+
+func TestLoadConfigFromFile(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	_ = os.WriteFile(".cupa.yaml", []byte("workspace_id: \"ws-custom\"\nchannel_id: \"ch-custom\"\n"), 0o600)
+
+	err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkspaceID != "ws-custom" {
+		t.Errorf("expected ws-custom, got: %s", cfg.WorkspaceID)
+	}
+	if cfg.ChannelID != "ch-custom" {
+		t.Errorf("expected ch-custom, got: %s", cfg.ChannelID)
+	}
+}
+
+func TestClickupRequestAPIError404(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": 404, "message": "Not found"})
+	}))
+
+	_, err := clickupRequest(context.Background(), http.MethodGet, messagesPath(), nil)
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	if !contains(err.Error(), "404") || !contains(err.Error(), ".cupa.yaml") {
+		t.Errorf("expected 404 error with config hint, got: %v", err)
+	}
+}
+
+func TestClickupRequestAPIError429(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": 429, "message": "Rate limited"})
+	}))
+
+	_, err := clickupRequest(context.Background(), http.MethodGet, messagesPath(), nil)
+	if err == nil {
+		t.Fatal("expected error for 429")
+	}
+	if !contains(err.Error(), "429") || !contains(err.Error(), "rate limited") {
+		t.Errorf("expected 429 rate limit error, got: %v", err)
+	}
+}
+
+func TestResolveSubtypeIDFallback(t *testing.T) {
+	// Reset OnceValues to re-fetch.
+	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Return subtypes without "Update" — should fall back to first.
+		_ = json.NewEncoder(w).Encode([]postSubtype{
+			{ID: "first-id", Name: "Announcement"},
+			{ID: "second-id", Name: "Discussion"},
+		})
+	}))
+
+	id, err := resolveSubtypeID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "first-id" {
+		t.Errorf("expected fallback to first subtype, got: %s", id)
+	}
+}
+
+func TestHandleCheckSetupTokenSet(t *testing.T) {
+	t.Setenv("CLICKUP_TOKEN", "")
+
+	result, _, err := handleCheckSetup(context.Background(), nil, checkSetupArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "NOT SET") {
+		t.Error("expected NOT SET when token is empty")
+	}
+}
+
+func TestMessagesAfter(t *testing.T) {
+	msgs := []message{
+		{ID: json.Number("300"), Content: "new"},
+		{ID: json.Number("200"), Content: "match"},
+		{ID: json.Number("100"), Content: "old"},
+	}
+	got := messagesAfter(msgs, 150)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	if got[0].Content != "new" || got[1].Content != "match" {
+		t.Errorf("unexpected messages: %v", got)
+	}
+
+	got = messagesAfter(msgs, 500)
+	if len(got) != 0 {
+		t.Errorf("expected 0 messages for high afterID, got %d", len(got))
+	}
 }
 
 func contains(s, substr string) bool {
