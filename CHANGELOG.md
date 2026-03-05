@@ -4,6 +4,7 @@
 
 ### ✨ Features
 
+- Support file sharing via `post_content` tool; rich markdown posts directly in channel
 - Add `start_chat` and `stop_chat` MCP tools for interactive cross-agent conversation
 - MCP server for Agent Notes; live cross-agent conversation via `post_note`, `read_notes`, and `wait_for_reply` tools
 

@@ -323,6 +323,132 @@ func TestClickupRequestAPIError(t *testing.T) {
 	}
 }
 
+func TestHandlePostContent(t *testing.T) {
+	oldProject := cfg.Project
+	cfg.Project = "myapp"
+	t.Cleanup(func() { cfg.Project = oldProject })
+
+	// Reset cached subtype.
+	subtypesMu.Lock()
+	cachedSubtype = ""
+	subtypesMu.Unlock()
+
+	var postedBody map[string]any
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// Return subtypes.
+			subtypes := []postSubtype{
+				{ID: "sub-1", Name: "Announcement"},
+				{ID: "sub-2", Name: "Update"},
+				{ID: "sub-3", Name: "Idea"},
+			}
+			_ = json.NewEncoder(w).Encode(subtypes)
+			return
+		}
+		// POST: capture the body.
+		if err := json.NewDecoder(r.Body).Decode(&postedBody); err != nil {
+			t.Fatal(err)
+		}
+		resp := message{ID: json.Number("800"), Content: "posted", Date: json.Number("1704067200000"), UserID: "u1"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	result, _, err := handlePostContent(context.Background(), nil, postContentArgs{
+		Title:   "Build Report",
+		Content: "## Results\n\n- All tests passed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "[myapp] Build Report") {
+		t.Errorf("expected project-prefixed title in result, got: %s", text)
+	}
+	if !contains(text, "800") {
+		t.Errorf("expected message ID in result, got: %s", text)
+	}
+
+	// Verify the posted body structure.
+	if postedBody["type"] != "post" {
+		t.Errorf("expected type=post, got: %v", postedBody["type"])
+	}
+	if postedBody["content_format"] != "text/md" {
+		t.Errorf("expected content_format=text/md, got: %v", postedBody["content_format"])
+	}
+	postData, ok := postedBody["post_data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected post_data map, got: %T", postedBody["post_data"])
+	}
+	if postData["title"] != "[myapp] Build Report" {
+		t.Errorf("expected prefixed title, got: %v", postData["title"])
+	}
+	subtype, ok := postData["subtype"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected subtype map, got: %T", postData["subtype"])
+	}
+	if subtype["id"] != "sub-2" {
+		t.Errorf("expected Update subtype sub-2, got: %v", subtype["id"])
+	}
+}
+
+func TestHandlePostContentEmptyFields(t *testing.T) {
+	t.Setenv("CLICKUP_TOKEN", "test-token")
+
+	result, _, err := handlePostContent(context.Background(), nil, postContentArgs{Title: "", Content: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for empty title")
+	}
+
+	result, _, err = handlePostContent(context.Background(), nil, postContentArgs{Title: "x", Content: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for empty content")
+	}
+}
+
+func TestHandlePostContentCachesSubtype(t *testing.T) {
+	subtypesMu.Lock()
+	cachedSubtype = ""
+	subtypesMu.Unlock()
+
+	subtypeFetches := 0
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			subtypeFetches++
+			_ = json.NewEncoder(w).Encode([]postSubtype{{ID: "cached-id", Name: "Update"}})
+			return
+		}
+		resp := message{ID: json.Number("801"), Content: "ok", Date: json.Number("0"), UserID: "u1"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	// Call twice — subtype should only be fetched once.
+	for range 2 {
+		result, _, err := handlePostContent(context.Background(), nil, postContentArgs{
+			Title:   "Test",
+			Content: "body",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("unexpected error: %v", result.Content)
+		}
+	}
+
+	if subtypeFetches != 1 {
+		t.Errorf("expected 1 subtype fetch, got %d", subtypeFetches)
+	}
+}
+
 func TestHandleStartChatPostsAndWaitsForReply(t *testing.T) {
 	oldProject := cfg.Project
 	cfg.Project = "testproj"

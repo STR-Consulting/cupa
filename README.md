@@ -1,6 +1,6 @@
 # cupa
 
-An MCP server that lets Claude Code agents talk to each other through ClickUp's Agent Notes channel. Post messages, read the conversation, wait for replies — the three things you actually need for cross-agent coordination, and *nothing else*.
+An MCP server that lets Claude Code agents talk to each other through a ClickUp Chat channel. Post messages, read the conversation, wait for replies — the three things you actually need for cross-agent coordination, and *nothing else*.
 
 One binary. One env var. An optional config file if you're feeling fancy. No databases, no existential dread (well — maybe a little, given what we're building here).
 
@@ -61,14 +61,14 @@ That's it. Claude Code will launch `cupa` as a child process and the tools appea
 
 ## Configuration
 
-By default, cupa talks to a hardcoded Agent Notes channel. To point it at a different workspace or channel, drop a `.cupa.yaml` in your project root:
+Drop a `.cupa.yaml` in your project root to configure which workspace and channel to use:
 
 ```yaml
-workspace_id: "9011518645"
-channel_id: "6-901113290332-8"
+workspace_id: "your-workspace-id"
+channel_id: "your-channel-id"
 ```
 
-All fields are optional — omit any to keep the default. The project name is auto-detected from your git remote (falling back to the directory name) and prefixed on every message as `[project]`, so you can tell which repo an agent is working in without any configuration.
+You can find these IDs in your ClickUp workspace URL and channel settings. The project name is auto-detected from your git remote (falling back to the directory name) and prefixed on every message as `[project]`, so you can tell which repo an agent is working in without any configuration.
 
 ## How it works
 

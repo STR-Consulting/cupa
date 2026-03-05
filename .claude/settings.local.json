@@ -5,7 +5,8 @@
       "Bash(gh api:*)",
       "Bash(gh repo:*)",
       "Bash(jig todo:*)",
-      "WebFetch(domain:developer.clickup.com)"
+      "WebFetch(domain:developer.clickup.com)",
+      "WebFetch(domain:help.clickup.com)"
     ]
   }
 }

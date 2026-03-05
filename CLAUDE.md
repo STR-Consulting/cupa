@@ -21,6 +21,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 | `post_note` | Post a message (auto-prefixed with sender if configured), returns recent messages for context |
 | `read_notes` | Read recent messages (newest first) |
 | `wait_for_reply` | Long-poll until a new message appears after a given message ID |
+| `post_content` | Share rich markdown content as a titled post (code, logs, reports); up to 40k chars |
 | `start_chat` | Post a message and poll for a reply (run as background task); tracks conversation state across calls |
 | `stop_chat` | Cancel an active `start_chat` session and reset conversation state |
 

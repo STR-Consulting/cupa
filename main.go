@@ -441,6 +441,113 @@ func handleWaitForReply(ctx context.Context, _ *mcp.CallToolRequest, args waitFo
 	}
 }
 
+// --- Tool: post_content ---
+
+// postSubtype holds a cached ClickUp post subtype.
+type postSubtype struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+var (
+	subtypesMu    sync.Mutex
+	cachedSubtype string // cached "Update" subtype ID
+)
+
+func subtypesPath() string {
+	return "/workspaces/" + cfg.WorkspaceID + "/comments/types/post/subtypes"
+}
+
+// resolveSubtypeID fetches available post subtypes and returns the "Update" subtype ID.
+// Falls back to the first available subtype if "Update" isn't found.
+func resolveSubtypeID(ctx context.Context) (string, error) {
+	subtypesMu.Lock()
+	if cachedSubtype != "" {
+		id := cachedSubtype
+		subtypesMu.Unlock()
+		return id, nil
+	}
+	subtypesMu.Unlock()
+
+	data, err := clickupRequest(ctx, http.MethodGet, subtypesPath(), nil)
+	if err != nil {
+		return "", fmt.Errorf("fetch post subtypes: %w", err)
+	}
+
+	var subtypes []postSubtype
+	if err := json.Unmarshal(data, &subtypes); err != nil {
+		return "", fmt.Errorf("parse post subtypes: %w", err)
+	}
+	if len(subtypes) == 0 {
+		return "", fmt.Errorf("no post subtypes available in this workspace")
+	}
+
+	// Prefer "Update" as the default subtype for agent content sharing.
+	chosen := subtypes[0]
+	for _, st := range subtypes {
+		if strings.EqualFold(st.Name, "Update") {
+			chosen = st
+			break
+		}
+	}
+
+	subtypesMu.Lock()
+	cachedSubtype = chosen.ID
+	subtypesMu.Unlock()
+
+	return chosen.ID, nil
+}
+
+type postContentArgs struct {
+	Title   string `json:"title" jsonschema:"Title for the post (max 255 chars)"`
+	Content string `json:"content" jsonschema:"Markdown content to share (max 40000 chars). Use for code snippets, logs, reports, or any structured text."`
+}
+
+func handlePostContent(ctx context.Context, _ *mcp.CallToolRequest, args postContentArgs) (*mcp.CallToolResult, any, error) {
+	if args.Content == "" {
+		return toolError("content is required"), nil, nil
+	}
+	if args.Title == "" {
+		return toolError("title is required"), nil, nil
+	}
+
+	subtypeID, err := resolveSubtypeID(ctx)
+	if err != nil {
+		return toolError(err.Error()), nil, nil
+	}
+
+	title := args.Title
+	if cfg.Project != "" {
+		title = "[" + cfg.Project + "] " + title
+	}
+
+	body := map[string]any{
+		"type":           "post",
+		"content":        args.Content,
+		"content_format": "text/md",
+		"post_data": map[string]any{
+			"title":   title,
+			"subtype": map[string]string{"id": subtypeID},
+		},
+	}
+
+	data, err := clickupRequest(ctx, http.MethodPost, messagesPath(), body)
+	if err != nil {
+		return toolError(err.Error()), nil, nil
+	}
+
+	var posted message
+	if err := json.Unmarshal(data, &posted); err != nil {
+		return toolError(fmt.Sprintf("parse response: %v", err)), nil, nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{
+			Text: fmt.Sprintf("Posted content \"%s\" (message id:%s)", title, posted.ID),
+		}},
+	}, nil, nil
+}
+
 // --- Chat session state ---
 
 var (
@@ -590,10 +697,11 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.5.0",
+		Version: "0.6.0",
 	}, &mcp.ServerOptions{
 		Instructions: "cupa is a cross-agent messaging channel via ClickUp Chat. " +
 			"Use post_note to send messages and read_notes to see recent conversation. " +
+			"Use post_content to share rich markdown content (code, logs, reports) as a titled post. " +
 			"For interactive conversations with another agent, use start_chat (run it as a background task) " +
 			"and stop_chat when done. Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.",
@@ -618,6 +726,13 @@ func main() {
 		Name:        "wait_for_reply",
 		Description: "Long-poll until a new message appears after a given message ID",
 	}, handleWaitForReply)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "post_content",
+		Description: "Share rich markdown content as a titled post in the Agent Notes channel. " +
+			"Use this for code snippets, logs, error output, reports, or any structured text that benefits from a title and formatting. " +
+			"Content supports markdown (up to 40000 chars). For short plain-text messages, use post_note instead.",
+	}, handlePostContent)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "start_chat",
