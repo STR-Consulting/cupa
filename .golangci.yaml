@@ -1,0 +1,84 @@
+# https://golangci-lint.run/docs/configuration/file/
+# https://github.com/golangci/golangci-lint/blob/HEAD/.golangci.reference.yml
+# run: golangci-lint run
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    # - golines
+
+  settings:
+    # goimports:
+    #   local-prefixes:
+    #     - github.com/pacer/core
+    golines: # https://golangci-lint.run/docs/formatters/configuration/#golines
+      max-len: 90
+      shorten-comments: true
+
+linters:
+  default: standard
+  enable:
+    - errorlint # error wrapping best practices
+    - gocritic # opinionated but useful
+    - misspell # spelling mistakes
+    # modernize: disabled — go fix ./... applies the same analyzers (golang.org/x/tools/go/analysis/passes/modernize)
+    - nilerr # returning nil after checking err != nil
+    - unconvert # unnecessary type conversions
+    - unparam # unused function parameters
+    - whitespace # leading/trailing whitespace
+    - gocheckcompilerdirectives
+    - godoclint
+    - gosec
+    - importas
+    # intrange: disabled — go fix ./... applies the same rangeint analyzer
+    - perfsprint
+    - usestdlibvars
+  disable:
+    - goconst
+    - modernize # go fix ./... applies the same modernize analyzers
+    - intrange # go fix ./... applies the same rangeint analyzer
+
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer overflow — flagged on known-safe PKCS7 padding and hex parsing
+        - G117 # false positives on API response structs (AccessToken, Password, etc.)
+        - G704 # SSRF taint analysis — our HTTP clients use validated URLs
+        - G705 # XSS taint analysis — we use html/template (auto-escaped)
+        - G706 # log injection taint analysis — slog handles sanitization
+
+    gocritic: # https://go-critic.com/overview
+      enabled-checks:
+        - sqlQuery
+        - boolExprSimplify
+        - deferUnlambda
+        - emptyFallthrough
+        - emptyStringTest
+        - nestingReduce
+        - paramTypeCombine
+        - ptrToRefParam
+        - stringConcatSimplify
+        - typeUnparen
+        - appendCombine
+        # - hugeParam
+        - preferFprint
+        - preferStringWriter
+        - rangeExprCopy
+        - sliceClear
+      disabled-checks:
+        - ifElseChain # switch vs if-else is style preference
+        - exitAfterDefer # sometimes intentional
+
+  exclusions:
+    rules:
+      # https://golangci-lint.run/docs/linters/false-positives/
+      # - path: '(.+)_test\.go'
+
+    paths:
+      - ".*\\.my\\.go$"
+      - ".*\\.sql\\.go$" # sqlc-generated files
+      - main.go
+      - "^\\.claude/"
+      - "^web/"

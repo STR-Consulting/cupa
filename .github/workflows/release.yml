@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          GOOS=darwin GOARCH=arm64 go build -o dist/clickup-agent-chat-darwin-arm64 .
+          GOOS=windows GOARCH=amd64 go build -o dist/clickup-agent-chat-windows-amd64.exe .
+
+      - name: Package archives
+        run: |
+          cd dist
+          tar czf clickup-agent-chat-darwin-arm64.tar.gz clickup-agent-chat-darwin-arm64
+          zip clickup-agent-chat-windows-amd64.zip clickup-agent-chat-windows-amd64.exe
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum clickup-agent-chat-darwin-arm64.tar.gz > clickup-agent-chat-darwin-arm64.tar.gz.sha256
+          sha256sum clickup-agent-chat-windows-amd64.zip > clickup-agent-chat-windows-amd64.zip.sha256
+
+      - name: Generate release notes
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s" "$PREV_TAG..$TAG" > release-notes.md
+          else
+            git log --pretty=format:"- %s" "$TAG" > release-notes.md
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            dist/clickup-agent-chat-darwin-arm64.tar.gz
+            dist/clickup-agent-chat-darwin-arm64.tar.gz.sha256
+            dist/clickup-agent-chat-windows-amd64.zip
+            dist/clickup-agent-chat-windows-amd64.zip.sha256
+
+  update-homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get release info
+        id: release
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download checksums
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          curl -sL "$BASE_URL/clickup-agent-chat-darwin-arm64.tar.gz.sha256" -o arm64.sha256
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.CLICKUP_TAP_TOKEN }}
+        run: |
+          TAG=${{ steps.release.outputs.tag }}
+          VERSION=${{ steps.release.outputs.version }}
+          ARM64_SHA=$(awk '{print $1}' arm64.sha256)
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-clickup-agent-chat.git" tap
+          mkdir -p tap/Formula
+
+          cat > tap/Formula/clickup-agent-chat.rb << FORMULA
+          class ClickupAgentChat < Formula
+            desc "MCP server for ClickUp Agent Notes cross-agent conversation"
+            homepage "https://github.com/${{ github.repository }}"
+            version "$VERSION"
+            license "MIT"
+
+            on_arm do
+              url "$BASE_URL/clickup-agent-chat-darwin-arm64.tar.gz"
+              sha256 "$ARM64_SHA"
+            end
+
+            def install
+              bin.install "clickup-agent-chat-darwin-arm64" => "clickup-agent-chat"
+            end
+          end
+          FORMULA
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Update to $TAG"
+          git push
+
+  update-scoop:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get release info
+        id: release
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download checksums
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          curl -sL "$BASE_URL/clickup-agent-chat-windows-amd64.zip.sha256" -o windows.sha256
+
+      - name: Update Scoop bucket
+        env:
+          TAP_TOKEN: ${{ secrets.CLICKUP_TAP_TOKEN }}
+        run: |
+          TAG=${{ steps.release.outputs.tag }}
+          VERSION=${{ steps.release.outputs.version }}
+          WIN_SHA=$(awk '{print $1}' windows.sha256)
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-clickup-agent-chat.git" bucket
+          mkdir -p bucket/bucket
+
+          cat > bucket/bucket/clickup-agent-chat.json << MANIFEST
+          {
+            "version": "$VERSION",
+            "architecture": {
+              "64bit": {
+                "url": "$BASE_URL/clickup-agent-chat-windows-amd64.zip",
+                "hash": "$WIN_SHA"
+              }
+            },
+            "bin": "clickup-agent-chat-windows-amd64.exe"
+          }
+          MANIFEST
+
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Update to $TAG"
+          git push

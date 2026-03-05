@@ -1,0 +1,140 @@
+[
+   {
+      "label": "Build",
+      "command": "mise run build",
+      "tags": ["build"]
+   },
+   {
+      "label": "Start Databases",
+      "command": "mise run db:start",
+      "reveal": "never",
+      "hide": "on_success",
+      "tags": ["db"]
+   },
+   {
+      "label": "Stop Databases",
+      "command": "mise run db:stop",
+      "reveal": "never",
+      "hide": "on_success",
+      "tags": ["db"]
+   },
+   {
+      "label": "Migrate Local DB",
+      "command": "mise run db:migrate",
+      "tags": ["db"]
+   },
+   {
+      "label": "Migrate Prod DB",
+      "command": "mise run db:migrate:prod",
+      "tags": ["db"]
+   },
+   {
+      "label": "Start Local App",
+      "command": "mise run dev",
+      "use_new_terminal": true,
+      "tags": ["run"]
+   },
+   {
+      "label": "Start Local App (Prod DB)",
+      "command": "mise run dev:prod",
+      "use_new_terminal": true,
+      "tags": ["run"]
+   },
+   {
+      "label": "Deploy to Prod",
+      "command": "mise run deploy:prod",
+      "use_new_terminal": true,
+      "tags": ["deploy"]
+   },
+   {
+      "label": "Deploy to Test",
+      "command": "mise run deploy:test",
+      "use_new_terminal": true,
+      "tags": ["deploy"]
+   },
+   {
+      "label": "Deploy to Test then Prod",
+      "command": "mise run deploy:both",
+      "use_new_terminal": true,
+      "tags": ["deploy"]
+   },
+   {
+      "label": "go test (unit)",
+      "command": "go test -v $ZED_RELATIVE_FILE -run $ZED_SYMBOL",
+      "tags": ["go-test"]
+   },
+   {
+      "label": "Run Unit Tests",
+      "command": "mise run test",
+      "use_new_terminal": true,
+      "tags": ["test"]
+   },
+   {
+      "label": "Run SQL Tests",
+      "command": "mise run test:sql",
+      "use_new_terminal": true,
+      "tags": ["test"]
+   },
+   {
+      "label": "Run Integration Tests",
+      "command": "mise run test:integration",
+      "use_new_terminal": true,
+      "tags": ["test"]
+   },
+   {
+      "label": "go test (integration)",
+      "command": "doppler run -p pacer -c dev -- go test -tags=integration -v $ZED_RELATIVE_FILE -run $ZED_SYMBOL",
+      "tags": ["go-test"]
+   },
+   {
+      "label": "go test package (integration)",
+      "command": "doppler run -p pacer -c dev -- go test -tags=integration -v ./...",
+      "cwd": "$ZED_DIRNAME",
+      "tags": ["go-test"]
+   },
+   {
+      "label": "Generate Logo Dots",
+      "command": "mise run generate:logo-dots",
+      "tags": ["build"]
+   },
+   {
+      "label": "Generate sqlc",
+      "command": "mise run generate:sqlc",
+      "tags": ["build"]
+   },
+   {
+      "label": "Lint",
+      "command": "mise run lint",
+      "tags": ["lint"]
+   },
+   {
+      "label": "Merge Latest Main",
+      "command": "mise run git:merge-main",
+      "tags": ["git"]
+   },
+   {
+      "label": "Sync Branches",
+      "command": "mise run git:sync",
+      "tags": ["git"]
+   },
+   {
+      "label": "Tofu Apply",
+      "command": "mise run tofu:apply",
+      "tags": ["deploy"]
+   },
+   {
+      "label": "Tofu Plan",
+      "command": "mise run tofu:plan",
+      "tags": ["deploy"]
+   },
+   {
+      "label": "Update Dependencies",
+      "command": "mise run deps:update",
+      "tags": ["deps"]
+   },
+   {
+      "label": "Replace Local DB from Prod",
+      "command": "mise run db:replace",
+      "tags": ["db"]
+   }
+]

@@ -1,0 +1,5 @@
+# Shellcheck configuration
+# https://github.com/koalaman/shellcheck/blob/master/shellcheck.1.md#rc-files
+
+# Don't warn about not following sourced files (we source project scripts)
+disable=SC1091

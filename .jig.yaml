@@ -1,0 +1,59 @@
+todo:
+    path: .issues
+    default_status: draft
+    default_type: task
+    sync:
+      clickup:
+        list_id: "901112937048"
+        type_mapping:
+          milestone: 1
+          epic: 1002
+          feature: 0
+          bug: 1001
+          task: 0
+        status_mapping:
+          draft: "not started"
+          ready: "not started"
+          in-progress: "in progress"
+          completed: "completed"
+          scrapped: "completed"
+        custom_fields:
+          issue_id: "a0b0c69a-d036-4031-9deb-4ecc4cfa3e55"
+          created_at: "d3adc5e1-eedf-46e0-b5d5-a4dce3a0666b"
+nope:
+  rules:
+    - name: git-checkout-switch
+      pattern: 'git\s+(checkout|switch)\s+'
+      message: "git checkout/switch not allowed — branch changes require user approval"
+
+    - name: destructive-rm
+      pattern: 'rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|--force\s+).*(/|~|\$HOME)'
+      message: "destructive rm on broad paths not allowed"
+
+    - name: data-exfiltration
+      builtin: exfiltration
+      message: >-
+        data exfiltration detected — uploading sensitive files
+        (credentials, keys, .env) over the network is not allowed.
+
+    - name: env-hijack
+      builtin: env-hijack
+      message: >-
+        environment variable hijack detected — setting dangerous env vars
+        (LD_PRELOAD, DYLD_INSERT_LIBRARIES, NODE_OPTIONS, etc.) is not allowed.
+
+    - name: inline-secrets
+      builtin: inline-secrets
+      message: >-
+        inline secret detected — command contains what appears to be an API key,
+        token, or password. Do not embed secrets in commands.
+
+    - name: no-write-env
+      pattern: '"file_path"\s*:\s*"[^"]*\.env"'
+      tools: ["Write", "Edit"]
+      message: "writing to .env files not allowed"
+
+    - name: no-write-credentials
+      pattern: '"file_path"\s*:\s*"[^"]*(\.pem|\.key|\.p12|credentials\.json)"'
+      tools: ["Write", "Edit"]
+      message: "writing to credential files not allowed"
