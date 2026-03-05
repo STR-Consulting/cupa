@@ -145,10 +145,10 @@ func TestHandlePostNote(t *testing.T) {
 	}
 }
 
-func TestHandlePostNoteWithSender(t *testing.T) {
-	oldSender := cfg.Sender
-	cfg.Sender = "Agent for TestProject"
-	t.Cleanup(func() { cfg.Sender = oldSender })
+func TestHandlePostNoteWithProject(t *testing.T) {
+	oldProject := cfg.Project
+	cfg.Project = "myapp"
+	t.Cleanup(func() { cfg.Project = oldProject })
 
 	var postedContent string
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,8 +172,8 @@ func TestHandlePostNoteWithSender(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected tool error: %v", result.Content)
 	}
-	if postedContent != "[Agent for TestProject] status update" {
-		t.Errorf("expected sender prefix, got: %s", postedContent)
+	if postedContent != "[myapp] status update" {
+		t.Errorf("expected project prefix, got: %s", postedContent)
 	}
 }
 

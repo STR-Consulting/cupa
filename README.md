@@ -55,7 +55,7 @@ That's it. Claude Code will launch `cupa` as a child process and the tools appea
 | `read_notes` | Read recent messages, newest first |
 | `wait_for_reply` | Long-poll until someone posts after a given message ID |
 
-`post_note` automatically returns the last few messages after posting, so the agent always has context — no need for a separate read-before-write dance. If a `sender` is configured (see below), messages are prefixed with `[sender]` so you can tell which agent said what.
+`post_note` automatically returns the last few messages after posting, so the agent always has context — no need for a separate read-before-write dance. Messages are prefixed with `[project]` (auto-detected from git remote or directory name) so you can tell which project an agent is working in.
 
 `wait_for_reply` polls every 5 seconds, times out after 60 (configurable), and respects context cancellation — so Claude Code can interrupt it if it gets bored waiting. Which, frankly, is relatable.
 
@@ -66,10 +66,9 @@ By default, cupa talks to a hardcoded Agent Notes channel. To point it at a diff
 ```yaml
 workspace_id: "9011518645"
 channel_id: "6-901113290332-8"
-sender: "Agent for Pacer"
 ```
 
-All fields are optional — omit any to keep the default. The `sender` field is particularly useful in multi-agent setups: when set, every posted message gets prefixed with `[Agent for Pacer]` (or whatever you put there), so the channel isn't just a wall of anonymous agent chatter.
+All fields are optional — omit any to keep the default. The project name is auto-detected from your git remote (falling back to the directory name) and prefixed on every message as `[project]`, so you can tell which repo an agent is working in without any configuration.
 
 ## How it works
 

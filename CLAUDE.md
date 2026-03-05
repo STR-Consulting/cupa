@@ -39,11 +39,10 @@ Optional file in the working directory to override the default workspace/channel
 ```yaml
 workspace_id: "9011518645"
 channel_id: "6-901113290332-8"
-sender: "Agent for ProjectName"
 ```
 
 - If absent, the defaults above are used (Agent Notes channel).
-- When `sender` is set, all posted messages are prefixed with `[sender] `.
+- Project name is auto-detected from git remote (or directory name) and prefixed on all messages as `[project]`.
 
 ### MCP config (end-user)
 

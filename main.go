@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -30,15 +32,37 @@ const (
 type config struct {
 	WorkspaceID string
 	ChannelID   string
-	Sender      string
+	Project     string
 }
 
 var cfg config
+
+// detectProject returns a project name from git remote or directory name.
+func detectProject() string {
+	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
+	if err == nil {
+		url := strings.TrimSpace(string(out))
+		// git@github.com:org/repo.git or https://github.com/org/repo.git
+		url = strings.TrimSuffix(url, ".git")
+		if i := strings.LastIndex(url, "/"); i >= 0 {
+			return url[i+1:]
+		}
+		if i := strings.LastIndex(url, ":"); i >= 0 {
+			return url[i+1:]
+		}
+	}
+	// Fall back to current directory name.
+	if wd, err := os.Getwd(); err == nil {
+		return filepath.Base(wd)
+	}
+	return ""
+}
 
 func loadConfig() error {
 	cfg = config{
 		WorkspaceID: "9011518645",
 		ChannelID:   "6-901113290332-8",
+		Project:     detectProject(),
 	}
 
 	f, err := os.Open(configFile)
@@ -68,8 +92,6 @@ func loadConfig() error {
 			cfg.WorkspaceID = val
 		case "channel_id":
 			cfg.ChannelID = val
-		case "sender":
-			cfg.Sender = val
 		}
 	}
 	return scanner.Err()
@@ -248,10 +270,10 @@ func handleCheckSetup(_ context.Context, _ *mcp.CallToolRequest, _ checkSetupArg
 	b.WriteString("## Active configuration\n\n")
 	b.WriteString("- **Workspace ID:** " + cfg.WorkspaceID + "\n")
 	b.WriteString("- **Channel ID:** " + cfg.ChannelID + "\n")
-	if cfg.Sender != "" {
-		b.WriteString("- **Sender prefix:** " + cfg.Sender + "\n")
+	if cfg.Project != "" {
+		b.WriteString("- **Project:** " + cfg.Project + " (messages prefixed with `[" + cfg.Project + "]`)\n")
 	} else {
-		b.WriteString("- **Sender prefix:** (none — messages posted without prefix)\n")
+		b.WriteString("- **Project:** (unknown — messages posted without prefix)\n")
 	}
 	b.WriteString("\n")
 
@@ -260,9 +282,8 @@ func handleCheckSetup(_ context.Context, _ *mcp.CallToolRequest, _ checkSetupArg
 	b.WriteString("```yaml\n")
 	b.WriteString("workspace_id: \"YOUR_WORKSPACE_ID\"\n")
 	b.WriteString("channel_id: \"YOUR_CHANNEL_ID\"\n")
-	b.WriteString("sender: \"Agent for ProjectName\"\n")
 	b.WriteString("```\n\n")
-	b.WriteString("When `sender` is set, all posted messages are automatically prefixed with `[sender] `.\n\n")
+	b.WriteString("The project name is auto-detected from the git remote (or directory name) and prefixed on all messages.\n\n")
 	b.WriteString("To find these IDs:\n\n")
 	b.WriteString("1. **Workspace ID:** ClickUp Settings → Workspaces → look at the URL: `app.clickup.com/{workspace_id}/...`\n")
 	b.WriteString("2. **Channel ID:** Open the Chat channel in ClickUp → the channel ID is in the URL after `/chat/`\n")
@@ -304,8 +325,8 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 	}
 
 	content := args.Content
-	if cfg.Sender != "" {
-		content = "[" + cfg.Sender + "] " + content
+	if cfg.Project != "" {
+		content = "[" + cfg.Project + "] " + content
 	}
 
 	body := map[string]string{"content": content}
@@ -429,8 +450,13 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.1.0",
-	}, nil)
+		Version: "0.3.0",
+	}, &mcp.ServerOptions{
+		Instructions: "cupa is a cross-agent messaging channel via ClickUp Chat. " +
+			"Use post_note to send messages and read_notes to see recent conversation. " +
+			"Messages are automatically prefixed with the project name. " +
+			"If you encounter auth or config errors, use check_setup for guided diagnostics.",
+	})
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "check_setup",
