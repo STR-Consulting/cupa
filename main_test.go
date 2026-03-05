@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -331,7 +330,7 @@ func TestHandlePostContent(t *testing.T) {
 	t.Cleanup(func() { cfg.Project = oldProject })
 
 	// Reset the OnceValues so it re-fetches.
-	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+	resetSubtypeCache()
 
 	var postedBody map[string]any
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -415,7 +414,7 @@ func TestHandlePostContentEmptyFields(t *testing.T) {
 }
 
 func TestHandlePostContentCachesSubtype(t *testing.T) {
-	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+	resetSubtypeCache()
 
 	subtypeFetches := 0
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +447,7 @@ func TestHandlePostContentCachesSubtype(t *testing.T) {
 }
 
 func TestHandlePostContentWrappedSubtypes(t *testing.T) {
-	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+	resetSubtypeCache()
 
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -471,6 +470,83 @@ func TestHandlePostContentWrappedSubtypes(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("unexpected error: %v", result.Content)
+	}
+}
+
+func TestHandlePostContentDataWrappedSubtypes(t *testing.T) {
+	resetSubtypeCache()
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// Return subtypes wrapped in a "data" key.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []postSubtype{{ID: "data-id", Name: "Announcement"}},
+			})
+			return
+		}
+		resp := message{ID: json.Number("902"), Content: "ok", Date: json.Number("0"), UserID: "u1"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	result, _, err := handlePostContent(context.Background(), nil, postContentArgs{
+		Title:   "Test",
+		Content: "body",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+}
+
+func TestHandlePostContentRetriesOnFailure(t *testing.T) {
+	resetSubtypeCache()
+
+	calls := 0
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			calls++
+			if calls == 1 {
+				// First call: return empty subtypes.
+				_ = json.NewEncoder(w).Encode(map[string]any{"subtypes": []postSubtype{}})
+				return
+			}
+			// Second call: return valid subtypes.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"subtypes": []postSubtype{{ID: "retry-id", Name: "Update"}},
+			})
+			return
+		}
+		resp := message{ID: json.Number("903"), Content: "ok", Date: json.Number("0"), UserID: "u1"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	// First call should fail.
+	result, _, err := handlePostContent(context.Background(), nil, postContentArgs{
+		Title:   "Test",
+		Content: "body",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error on first call with empty subtypes")
+	}
+
+	// Second call should retry and succeed.
+	result, _, err = handlePostContent(context.Background(), nil, postContentArgs{
+		Title:   "Test",
+		Content: "body",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success on retry, got: %v", result.Content)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 subtype fetches, got %d", calls)
 	}
 }
 
@@ -695,7 +771,7 @@ func TestClickupRequestAPIError429(t *testing.T) {
 
 func TestResolveSubtypeIDFallback(t *testing.T) {
 	// Reset OnceValues to re-fetch.
-	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+	resetSubtypeCache()
 
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Return subtypes without "Update" — should fall back to first.

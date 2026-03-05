@@ -470,19 +470,24 @@ func fetchSubtypeID() (string, error) {
 		return "", fmt.Errorf("fetch post subtypes: %w", err)
 	}
 
-	// API may return a bare array or an object like {"subtypes": [...]}.
+	// API may return a bare array, an object like {"subtypes": [...]},
+	// or an object with a "data" key like {"data": [...]}.
 	var subtypes []postSubtype
 	if err := json.Unmarshal(data, &subtypes); err != nil {
 		var wrapper struct {
 			Subtypes []postSubtype `json:"subtypes"`
+			Data     []postSubtype `json:"data"`
 		}
 		if err2 := json.Unmarshal(data, &wrapper); err2 != nil {
-			return "", fmt.Errorf("parse post subtypes: %w", err)
+			return "", fmt.Errorf("parse post subtypes: %w (raw: %s)", err, truncate(data, 200))
 		}
 		subtypes = wrapper.Subtypes
+		if len(subtypes) == 0 {
+			subtypes = wrapper.Data
+		}
 	}
 	if len(subtypes) == 0 {
-		return "", fmt.Errorf("no post subtypes available in this workspace")
+		return "", fmt.Errorf("no post subtypes available in this workspace (raw: %s)", truncate(data, 200))
 	}
 
 	// Prefer "Update" as the default subtype for agent content sharing.
@@ -497,7 +502,39 @@ func fetchSubtypeID() (string, error) {
 	return chosen.ID, nil
 }
 
-var resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+// truncate returns s limited to n bytes, appending "..." if truncated.
+func truncate(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
+}
+
+var (
+	subtypeIDOnce  sync.Once
+	subtypeIDValue string
+	subtypeIDErr   error
+)
+
+// resolveSubtypeID fetches and caches the subtype ID. On error, retries on subsequent calls.
+func resolveSubtypeID() (string, error) {
+	subtypeIDOnce.Do(func() {
+		subtypeIDValue, subtypeIDErr = fetchSubtypeID()
+	})
+	if subtypeIDErr != nil {
+		// Reset so next call retries.
+		subtypeIDOnce = sync.Once{}
+		return "", subtypeIDErr
+	}
+	return subtypeIDValue, nil
+}
+
+// resetSubtypeCache clears the cached subtype ID so the next call re-fetches.
+func resetSubtypeCache() {
+	subtypeIDOnce = sync.Once{}
+	subtypeIDValue = ""
+	subtypeIDErr = nil
+}
 
 type postContentArgs struct {
 	Title   string `json:"title" jsonschema:"Title for the post (max 255 chars)"`
