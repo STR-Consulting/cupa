@@ -447,6 +447,33 @@ func TestHandlePostContentCachesSubtype(t *testing.T) {
 	}
 }
 
+func TestHandlePostContentWrappedSubtypes(t *testing.T) {
+	resolveSubtypeID = sync.OnceValues(fetchSubtypeID)
+
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// Return subtypes wrapped in an object (as the real API does).
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"subtypes": []postSubtype{{ID: "wrapped-id", Name: "Update"}},
+			})
+			return
+		}
+		resp := message{ID: json.Number("901"), Content: "ok", Date: json.Number("0"), UserID: "u1"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	result, _, err := handlePostContent(context.Background(), nil, postContentArgs{
+		Title:   "Test",
+		Content: "body",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+}
+
 func TestHandleStartChatPostsAndWaitsForReply(t *testing.T) {
 	oldProject := cfg.Project
 	cfg.Project = "testproj"

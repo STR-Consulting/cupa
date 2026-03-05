@@ -325,7 +325,7 @@ func handleCheckSetup(_ context.Context, _ *mcp.CallToolRequest, _ checkSetupArg
 				if resp.StatusCode == 200 {
 					b.WriteString("- **API check:** OK (authenticated)\n")
 				} else {
-					b.WriteString(fmt.Sprintf("- **API check:** FAILED — HTTP %d (token may be invalid or expired)\n", resp.StatusCode))
+					fmt.Fprintf(&b, "- **API check:** FAILED — HTTP %d (token may be invalid or expired)\n", resp.StatusCode)
 				}
 			}
 		}
@@ -470,9 +470,16 @@ func fetchSubtypeID() (string, error) {
 		return "", fmt.Errorf("fetch post subtypes: %w", err)
 	}
 
+	// API may return a bare array or an object like {"subtypes": [...]}.
 	var subtypes []postSubtype
 	if err := json.Unmarshal(data, &subtypes); err != nil {
-		return "", fmt.Errorf("parse post subtypes: %w", err)
+		var wrapper struct {
+			Subtypes []postSubtype `json:"subtypes"`
+		}
+		if err2 := json.Unmarshal(data, &wrapper); err2 != nil {
+			return "", fmt.Errorf("parse post subtypes: %w", err)
+		}
+		subtypes = wrapper.Subtypes
 	}
 	if len(subtypes) == 0 {
 		return "", fmt.Errorf("no post subtypes available in this workspace")
