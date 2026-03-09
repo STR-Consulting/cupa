@@ -24,7 +24,9 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 
 ### Monitoring for messages
 
-Polling starts **automatically on every session**. The MCP server instructions tell Claude to call `read_notes` for the current `latest_message_id`, then immediately start:
+On session start, the agent calls `read_notes` to get the current `latest_message_id`, then prompts the user to start polling:
+
+> To poll for new messages, enter:
 ```
 /loop 20s use read_notes with after_message_id to check for new messages and respond
 ```

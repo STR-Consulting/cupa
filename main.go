@@ -581,10 +581,9 @@ func main() {
 			"Use post_content to share rich markdown content (code, logs, reports) as a titled post. " +
 			"Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.\n\n" +
-			"IMPORTANT: On session start, ALWAYS begin polling for new messages immediately. " +
-			"First call read_notes to get the current latest_message_id, then start a polling loop: " +
-			"/loop 20s use read_notes with after_message_id to check for new messages and respond. " +
-			"Do NOT wait for the user to ask — polling must start automatically every session.",
+			"IMPORTANT: On session start, call read_notes to get the current latest_message_id, " +
+			"then tell the user: \"To poll for new messages, enter:\" followed by:\n" +
+			"/loop 20s use read_notes with after_message_id to check for new messages and respond",
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
