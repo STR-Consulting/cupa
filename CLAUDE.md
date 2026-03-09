@@ -24,9 +24,9 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 
 ### Monitoring for messages
 
-Use `/loop` to poll for new messages:
+Polling starts **automatically on every session**. The MCP server instructions tell Claude to call `read_notes` for the current `latest_message_id`, then immediately start:
 ```
-/loop 2m use read_notes with after_message_id to check for new messages and respond
+/loop 20s use read_notes with after_message_id to check for new messages and respond
 ```
 
 ### ClickUp API

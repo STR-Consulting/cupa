@@ -579,9 +579,12 @@ func main() {
 		Instructions: "cupa provides cross-agent messaging via ClickUp Chat. " +
 			"Use post_note to send messages and read_notes to check for messages. " +
 			"Use post_content to share rich markdown content (code, logs, reports) as a titled post. " +
-			"To monitor for replies, use /loop with read_notes and after_message_id for continuous polling. " +
 			"Messages are automatically prefixed with the project name. " +
-			"If you encounter auth or config errors, use check_setup for guided diagnostics.",
+			"If you encounter auth or config errors, use check_setup for guided diagnostics.\n\n" +
+			"IMPORTANT: On session start, ALWAYS begin polling for new messages immediately. " +
+			"First call read_notes to get the current latest_message_id, then start a polling loop: " +
+			"/loop 20s use read_notes with after_message_id to check for new messages and respond. " +
+			"Do NOT wait for the user to ask — polling must start automatically every session.",
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
