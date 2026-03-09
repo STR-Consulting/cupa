@@ -27,10 +27,6 @@ const (
 	configFile     = ".cupa.yaml"
 	minRequestGap  = 700 * time.Millisecond // ~1.5 req/s
 	defaultLimit   = 20
-	defaultTimeout     = 60
-	defaultChatTimeout = 120
-	pollInterval       = 5 * time.Second
-
 	postTypePost    = "post"
 	contentFormatMD = "text/md"
 )
@@ -377,7 +373,8 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 // --- Tool: read_notes ---
 
 type readNotesArgs struct {
-	Limit int `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
+	Limit          int   `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
+	AfterMessageID int64 `json:"after_message_id" jsonschema:"Only return messages with ID greater than this value (for incremental polling)"`
 }
 
 func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotesArgs) (*mcp.CallToolResult, any, error) {
@@ -391,63 +388,48 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 		return toolError(err.Error()), nil, nil
 	}
 
+	// Determine the latest message ID before any filtering.
+	var latestID int64
+	if len(messages) > 0 {
+		latestID, _ = messages[0].ID.Int64()
+	}
+
+	// If after_message_id is set, filter and return chronological order.
+	if args.AfterMessageID > 0 {
+		messages = messagesAfter(messages, args.AfterMessageID)
+		if len(messages) == 0 {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: fmt.Sprintf("No new messages\n\n---\nlatest_message_id: %d", latestID),
+				}},
+			}, nil, nil
+		}
+		slices.Reverse(messages)
+		if len(messages) > limit {
+			messages = messages[:limit]
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{
+				Text: fmt.Sprintf("%s\n\n---\nlatest_message_id: %d", formatMessages(messages), latestID),
+			}},
+		}, nil, nil
+	}
+
 	if len(messages) > limit {
 		messages = messages[:limit]
 	}
 
 	if len(messages) == 0 {
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "No messages found"}},
+			Content: []mcp.Content{&mcp.TextContent{Text: "No messages found\n\n---\nlatest_message_id: 0"}},
 		}, nil, nil
 	}
 
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: formatMessages(messages)}},
+		Content: []mcp.Content{&mcp.TextContent{
+			Text: fmt.Sprintf("%s\n\n---\nlatest_message_id: %d", formatMessages(messages), latestID),
+		}},
 	}, nil, nil
-}
-
-// --- Tool: wait_for_reply ---
-
-type waitForReplyArgs struct {
-	AfterMessageID int64 `json:"after_message_id" jsonschema:"Wait for messages with ID greater than this"`
-	TimeoutSeconds int   `json:"timeout_seconds" jsonschema:"How long to wait in seconds (default 60)"`
-}
-
-func handleWaitForReply(ctx context.Context, _ *mcp.CallToolRequest, args waitForReplyArgs) (*mcp.CallToolResult, any, error) {
-	timeout := args.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
-
-	deadline := time.After(time.Duration(timeout) * time.Second)
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		messages, err := readMessages(ctx)
-		if err != nil {
-			return toolError(err.Error()), nil, nil
-		}
-
-		// Messages are newest-first; find any with ID > after_message_id.
-		newMessages := messagesAfter(messages, args.AfterMessageID)
-		if len(newMessages) > 0 {
-			// Return in chronological order (reverse of newest-first).
-			slices.Reverse(newMessages)
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: formatMessages(newMessages)}},
-			}, nil, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return toolError("cancelled"), nil, nil
-		case <-deadline:
-			return toolError(fmt.Sprintf("No new messages after %d seconds", timeout)), nil, nil
-		case <-ticker.C:
-			// Poll again.
-		}
-	}
 }
 
 // --- Tool: post_content ---
@@ -583,136 +565,6 @@ func handlePostContent(ctx context.Context, _ *mcp.CallToolRequest, args postCon
 	}, nil, nil
 }
 
-// --- Chat session state ---
-
-var (
-	chatMu     sync.Mutex
-	chatCancel context.CancelFunc
-	chatLastID int64
-)
-
-// --- Tool: start_chat ---
-
-type startChatArgs struct {
-	Message        string `json:"message" jsonschema:"Message to send to start or continue the conversation. If empty, just waits for the next reply without posting."`
-	TimeoutSeconds int    `json:"timeout_seconds" jsonschema:"How long to wait for a reply in seconds (default 120)"`
-}
-
-func handleStartChat(ctx context.Context, _ *mcp.CallToolRequest, args startChatArgs) (*mcp.CallToolResult, any, error) {
-	chatMu.Lock()
-	if chatCancel != nil {
-		chatMu.Unlock()
-		return toolError("A chat session is already active. Call stop_chat first, or wait for it to return."), nil, nil
-	}
-	chatCtx, cancel := context.WithCancel(ctx)
-	chatCancel = cancel
-	chatMu.Unlock()
-
-	defer func() {
-		cancel()
-		chatMu.Lock()
-		chatCancel = nil
-		chatMu.Unlock()
-	}()
-
-	// Post message if provided.
-	if args.Message != "" {
-		data, err := clickupRequest(chatCtx, http.MethodPost, messagesPath(), map[string]string{"content": prefixProject(args.Message)})
-		if err != nil {
-			return toolError(err.Error()), nil, nil
-		}
-		var posted message
-		if err := json.Unmarshal(data, &posted); err == nil {
-			if id, _ := posted.ID.Int64(); id > 0 {
-				chatMu.Lock()
-				chatLastID = id
-				chatMu.Unlock()
-			}
-		}
-	} else {
-		// No message — if no prior session, snapshot the current latest ID.
-		chatMu.Lock()
-		needSnapshot := chatLastID == 0
-		chatMu.Unlock()
-		if needSnapshot {
-			msgs, err := readMessages(chatCtx)
-			if err != nil {
-				return toolError(err.Error()), nil, nil
-			}
-			if len(msgs) > 0 {
-				if id, _ := msgs[0].ID.Int64(); id > 0 {
-					chatMu.Lock()
-					chatLastID = id
-					chatMu.Unlock()
-				}
-			}
-		}
-	}
-
-	// Poll for a reply.
-	timeout := args.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = defaultChatTimeout
-	}
-	deadline := time.After(time.Duration(timeout) * time.Second)
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		msgs, err := readMessages(chatCtx)
-		if err == nil {
-			chatMu.Lock()
-			afterID := chatLastID
-			chatMu.Unlock()
-
-			newMsgs := messagesAfter(msgs, afterID)
-			if len(newMsgs) > 0 {
-				slices.Reverse(newMsgs)
-				// Update lastID to the newest message.
-				if id, _ := newMsgs[len(newMsgs)-1].ID.Int64(); id > 0 {
-					chatMu.Lock()
-					chatLastID = id
-					chatMu.Unlock()
-				}
-				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: formatMessages(newMsgs)}},
-				}, nil, nil
-			}
-		}
-
-		select {
-		case <-chatCtx.Done():
-			return toolError("Chat session stopped"), nil, nil
-		case <-deadline:
-			return toolError(fmt.Sprintf("No reply received within %d seconds", timeout)), nil, nil
-		case <-ticker.C:
-		}
-	}
-}
-
-// --- Tool: stop_chat ---
-
-type stopChatArgs struct{}
-
-func handleStopChat(_ context.Context, _ *mcp.CallToolRequest, _ stopChatArgs) (*mcp.CallToolResult, any, error) {
-	chatMu.Lock()
-	cancel := chatCancel
-	chatCancel = nil
-	chatLastID = 0
-	chatMu.Unlock()
-
-	if cancel == nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "No active chat session"}},
-		}, nil, nil
-	}
-
-	cancel()
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: "Chat session stopped"}},
-	}, nil, nil
-}
-
 func main() {
 	log.SetOutput(os.Stderr)
 
@@ -722,13 +574,13 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.6.0",
+		Version: "0.7.0",
 	}, &mcp.ServerOptions{
-		Instructions: "cupa is a cross-agent messaging channel via ClickUp Chat. " +
-			"Use post_note to send messages and read_notes to see recent conversation. " +
+		Instructions: "cupa provides cross-agent messaging via ClickUp Chat. " +
+			"Use post_note to send messages and read_notes to check for messages. " +
 			"Use post_content to share rich markdown content (code, logs, reports) as a titled post. " +
-			"For interactive conversations with another agent, use start_chat (run it as a background task) " +
-			"and stop_chat when done. Messages are automatically prefixed with the project name. " +
+			"To monitor for replies, use /loop with read_notes and after_message_id for continuous polling. " +
+			"Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.",
 	})
 
@@ -743,14 +595,11 @@ func main() {
 	}, handlePostNote)
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "read_notes",
-		Description: "Read recent messages from the Agent Notes channel (newest first)",
+		Name: "read_notes",
+		Description: "Read messages from the Agent Notes channel. " +
+			"Pass after_message_id to get only new messages since your last read (returns chronological order). " +
+			"Response always includes latest_message_id for use in subsequent calls.",
 	}, handleReadNotes)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "wait_for_reply",
-		Description: "Long-poll until a new message appears after a given message ID",
-	}, handleWaitForReply)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "post_content",
@@ -758,20 +607,6 @@ func main() {
 			"Use this for code snippets, logs, error output, reports, or any structured text that benefits from a title and formatting. " +
 			"Content supports markdown (up to 40000 chars). For short plain-text messages, use post_note instead.",
 	}, handlePostContent)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name: "start_chat",
-		Description: "Start an interactive chat with another agent via the Agent Notes channel. " +
-			"Posts your message and polls until a reply arrives, then returns the reply. " +
-			"IMPORTANT: Call this as a background task so you can continue working while waiting for a reply. " +
-			"To continue the conversation, call start_chat again with your next message — it remembers where you left off. " +
-			"Call stop_chat when the conversation is finished.",
-	}, handleStartChat)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "stop_chat",
-		Description: "Stop an active chat session started with start_chat. Cancels any pending wait for a reply and resets the conversation state.",
-	}, handleStopChat)
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("Server failed: %v", err)

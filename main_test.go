@@ -214,6 +214,9 @@ func TestHandleReadNotes(t *testing.T) {
 	if contains(text, "oldest") {
 		t.Errorf("should not contain oldest with limit=2, got: %s", text)
 	}
+	if !contains(text, "latest_message_id: 3") {
+		t.Errorf("expected latest_message_id footer, got: %s", text)
+	}
 }
 
 func TestHandleReadNotesDefaultLimit(t *testing.T) {
@@ -226,75 +229,8 @@ func TestHandleReadNotesDefaultLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
-	if text != "No messages found" {
+	if !contains(text, "No messages found") {
 		t.Errorf("expected 'No messages found', got: %s", text)
-	}
-}
-
-func TestHandleWaitForReplyFound(t *testing.T) {
-	msgs := []message{
-		{ID: json.Number("200"), Content: "new reply", Date: json.Number("1704067200000"), UserID: "a"},
-		{ID: json.Number("100"), Content: "old", Date: json.Number("1704067100000"), UserID: "b"},
-	}
-	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
-	}))
-
-	result, _, err := handleWaitForReply(context.Background(), nil, waitForReplyArgs{
-		AfterMessageID: 150,
-		TimeoutSeconds: 5,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected tool error: %v", result.Content)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "new reply") {
-		t.Errorf("expected 'new reply' in result, got: %s", text)
-	}
-	if contains(text, "old") {
-		t.Errorf("should not contain old message, got: %s", text)
-	}
-}
-
-func TestHandleWaitForReplyTimeout(t *testing.T) {
-	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
-			{ID: json.Number("50"), Content: "old", Date: json.Number("0"), UserID: "a"},
-		}})
-	}))
-
-	result, _, err := handleWaitForReply(context.Background(), nil, waitForReplyArgs{
-		AfterMessageID: 100,
-		TimeoutSeconds: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Fatal("expected timeout error")
-	}
-}
-
-func TestHandleWaitForReplyCancelled(t *testing.T) {
-	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{}})
-	}))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
-
-	result, _, err := handleWaitForReply(ctx, nil, waitForReplyArgs{
-		AfterMessageID: 100,
-		TimeoutSeconds: 60,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Fatal("expected cancellation error")
 	}
 }
 
@@ -550,156 +486,6 @@ func TestHandlePostContentRetriesOnFailure(t *testing.T) {
 	}
 }
 
-func TestHandleStartChatPostsAndWaitsForReply(t *testing.T) {
-	oldProject := cfg.Project
-	cfg.Project = "testproj"
-	t.Cleanup(func() { cfg.Project = oldProject })
-
-	callCount := 0
-	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			var body struct{ Content string }
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatal(err)
-			}
-			if !contains(body.Content, "[testproj]") {
-				t.Errorf("expected project prefix, got: %s", body.Content)
-			}
-			resp := message{ID: json.Number("500"), Content: body.Content, Date: json.Number("1704067200000"), UserID: "u1"}
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		// GET: first call returns no new messages, second call returns a reply.
-		callCount++
-		if callCount <= 1 {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
-				{ID: json.Number("500"), Content: "original", Date: json.Number("1704067200000"), UserID: "u1"},
-			}})
-		} else {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
-				{ID: json.Number("501"), Content: "reply from other agent", Date: json.Number("1704067201000"), UserID: "u2"},
-				{ID: json.Number("500"), Content: "original", Date: json.Number("1704067200000"), UserID: "u1"},
-			}})
-		}
-	}))
-
-	// Reset chat state.
-	chatMu.Lock()
-	chatCancel = nil
-	chatLastID = 0
-	chatMu.Unlock()
-
-	result, _, err := handleStartChat(context.Background(), nil, startChatArgs{
-		Message:        "hello other agent",
-		TimeoutSeconds: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected tool error: %v", result.Content)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "reply from other agent") {
-		t.Errorf("expected reply in result, got: %s", text)
-	}
-}
-
-func TestHandleStartChatAlreadyActive(t *testing.T) {
-	t.Setenv("CLICKUP_TOKEN", "test-token")
-
-	chatMu.Lock()
-	_, cancel := context.WithCancel(context.Background())
-	chatCancel = cancel
-	chatMu.Unlock()
-	t.Cleanup(func() {
-		cancel()
-		chatMu.Lock()
-		chatCancel = nil
-		chatLastID = 0
-		chatMu.Unlock()
-	})
-
-	result, _, err := handleStartChat(context.Background(), nil, startChatArgs{Message: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Fatal("expected error for already active session")
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "already active") {
-		t.Errorf("expected 'already active' error, got: %s", text)
-	}
-}
-
-func TestHandleStartChatCancelled(t *testing.T) {
-	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{}})
-	}))
-
-	chatMu.Lock()
-	chatCancel = nil
-	chatLastID = 0
-	chatMu.Unlock()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
-
-	result, _, err := handleStartChat(ctx, nil, startChatArgs{TimeoutSeconds: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Fatal("expected error for cancelled context")
-	}
-}
-
-func TestHandleStopChatNoSession(t *testing.T) {
-	chatMu.Lock()
-	chatCancel = nil
-	chatLastID = 0
-	chatMu.Unlock()
-
-	result, _, err := handleStopChat(context.Background(), nil, stopChatArgs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "No active chat session") {
-		t.Errorf("expected 'No active chat session', got: %s", text)
-	}
-}
-
-func TestHandleStopChatCancelsSession(t *testing.T) {
-	t.Setenv("CLICKUP_TOKEN", "test-token")
-
-	chatMu.Lock()
-	_, cancel := context.WithCancel(context.Background())
-	chatCancel = cancel
-	chatLastID = 100
-	chatMu.Unlock()
-
-	result, _, err := handleStopChat(context.Background(), nil, stopChatArgs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "Chat session stopped") {
-		t.Errorf("expected 'Chat session stopped', got: %s", text)
-	}
-
-	// Verify state was reset.
-	chatMu.Lock()
-	if chatCancel != nil {
-		t.Error("chatCancel should be nil after stop")
-	}
-	if chatLastID != 0 {
-		t.Error("chatLastID should be 0 after stop")
-	}
-	chatMu.Unlock()
-}
-
 func TestLoadConfigDefaults(t *testing.T) {
 	// Run in a temp dir with no .cupa.yaml.
 	dir := t.TempDir()
@@ -803,23 +589,89 @@ func TestHandleCheckSetupTokenSet(t *testing.T) {
 	}
 }
 
-func TestMessagesAfter(t *testing.T) {
+func TestHandleReadNotesAfterMessageID(t *testing.T) {
 	msgs := []message{
-		{ID: json.Number("300"), Content: "new"},
-		{ID: json.Number("200"), Content: "match"},
-		{ID: json.Number("100"), Content: "old"},
+		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
+		{ID: json.Number("200"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
+		{ID: json.Number("100"), Content: "oldest", Date: json.Number("1704067000000"), UserID: "c"},
 	}
-	got := messagesAfter(msgs, 150)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(got))
-	}
-	if got[0].Content != "new" || got[1].Content != "match" {
-		t.Errorf("unexpected messages: %v", got)
-	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
+	}))
 
-	got = messagesAfter(msgs, 500)
-	if len(got) != 0 {
-		t.Errorf("expected 0 messages for high afterID, got %d", len(got))
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 150})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	// Should contain middle and newest in chronological order (middle first).
+	if !contains(text, "middle") || !contains(text, "newest") {
+		t.Errorf("expected middle and newest, got: %s", text)
+	}
+	if contains(text, "oldest") {
+		t.Errorf("should not contain oldest, got: %s", text)
+	}
+	// Should be in chronological order: middle before newest.
+	midIdx := strings.Index(text, "middle")
+	newIdx := strings.Index(text, "newest")
+	if midIdx > newIdx {
+		t.Errorf("expected chronological order (middle before newest), got: %s", text)
+	}
+	// Should include latest_message_id footer.
+	if !contains(text, "latest_message_id: 300") {
+		t.Errorf("expected latest_message_id: 300, got: %s", text)
+	}
+}
+
+func TestHandleReadNotesAfterMessageIDNoNew(t *testing.T) {
+	msgs := []message{
+		{ID: json.Number("100"), Content: "old", Date: json.Number("1704067000000"), UserID: "a"},
+	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
+	}))
+
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "No new messages") {
+		t.Errorf("expected 'No new messages', got: %s", text)
+	}
+	if !contains(text, "latest_message_id: 100") {
+		t.Errorf("expected latest_message_id: 100, got: %s", text)
+	}
+}
+
+func TestHandleReadNotesAfterMessageIDWithLimit(t *testing.T) {
+	msgs := []message{
+		{ID: json.Number("400"), Content: "d", Date: json.Number("1704067300000"), UserID: "a"},
+		{ID: json.Number("300"), Content: "c", Date: json.Number("1704067200000"), UserID: "a"},
+		{ID: json.Number("200"), Content: "b", Date: json.Number("1704067100000"), UserID: "a"},
+		{ID: json.Number("100"), Content: "a", Date: json.Number("1704067000000"), UserID: "a"},
+	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
+	}))
+
+	// 3 messages after ID 100 (200, 300, 400), but limit to 2.
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 100, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	// Count message separators to verify limit.
+	separators := strings.Count(text, "\n---\n")
+	// With 2 messages there should be 1 separator (between messages) plus the footer separator.
+	if separators != 2 {
+		t.Errorf("expected 2 separators (1 between messages + 1 footer), got %d in: %s", separators, text)
+	}
+	if !contains(text, "latest_message_id: 400") {
+		t.Errorf("expected latest_message_id: 400, got: %s", text)
 	}
 }
 

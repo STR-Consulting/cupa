@@ -1,7 +1,5 @@
 {
 	"mcpServers": {
-		"agent-notes": {
-			"command": "cupa"
-		}
+		"agent-notes": { "command": "cupa" }
 	}
 }
