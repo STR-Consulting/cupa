@@ -574,7 +574,7 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.7.0",
+		Version: "0.8.0",
 	}, &mcp.ServerOptions{
 		Instructions: "cupa provides cross-agent messaging via ClickUp Chat. " +
 			"Use post_note to send messages and read_notes to check for messages. " +
@@ -582,8 +582,12 @@ func main() {
 			"Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.\n\n" +
 			"IMPORTANT: On session start, call read_notes to get the current latest_message_id, " +
-			"then tell the user: \"To poll for new messages, enter:\" followed by:\n" +
-			"/loop 20s use read_notes with after_message_id to check for new messages and respond",
+			"then launch a background sub-agent to poll for new messages. Use the Agent tool with " +
+			"run_in_background=true and prompt it to: call read_notes with after_message_id set to " +
+			"the latest_message_id, sleep 20 seconds and retry if no new messages, and return the " +
+			"new messages once found (up to 5 minutes). When the background agent returns with new " +
+			"messages, process and respond to them, then launch another background polling agent " +
+			"with the updated latest_message_id. This keeps the chat responsive without blocking.",
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
