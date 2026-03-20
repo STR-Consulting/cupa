@@ -20,9 +20,7 @@ todo:
         custom_fields:
           issue_id: "a0b0c69a-d036-4031-9deb-4ecc4cfa3e55"
           created_at: "d3adc5e1-eedf-46e0-b5d5-a4dce3a0666b"
-companions:
-  brew: STR-Consulting/homebrew-cupa
-  scoop: STR-Consulting/scoop-bucket
+packages: [brew, scoop]
 nope:
   rules:
     - name: git-checkout-switch
