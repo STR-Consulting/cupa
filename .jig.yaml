@@ -22,7 +22,7 @@ todo:
           created_at: "d3adc5e1-eedf-46e0-b5d5-a4dce3a0666b"
 companions:
   brew: STR-Consulting/homebrew-cupa
-  scoop: STR-Consulting/scoop-cupa
+  scoop: STR-Consulting/scoop-bucket
 nope:
   rules:
     - name: git-checkout-switch

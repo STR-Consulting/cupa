@@ -108,10 +108,9 @@ jobs:
           WIN_SHA=$(grep "cupa_${VERSION}_windows_amd64.zip" checksums.txt | awk '{print $1}')
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-cupa.git" bucket
-          mkdir -p bucket/bucket
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/scoop-bucket.git" bucket
 
-          cat > bucket/bucket/cupa.json << MANIFEST
+          cat > bucket/cupa.json << MANIFEST
           {
             "version": "$VERSION",
             "architecture": {
@@ -127,6 +126,6 @@ jobs:
           cd bucket
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet || git commit -m "Update to $TAG"
+          git add cupa.json
+          git diff --cached --quiet || git commit -m "bump cupa to ${VERSION}"
           git push
