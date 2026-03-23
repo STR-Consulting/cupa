@@ -54,12 +54,19 @@ That's it. Claude Code will launch `cupa` as a child process and the tools appea
 | `post_note` | Post a message and return recent channel context |
 | `read_notes` | Read messages (server tracks position — first call returns all, subsequent calls return only new) |
 | `post_content` | Share rich markdown content as a titled post (code, logs, reports) |
+| `edit_note` | Edit a previously posted message by ID |
+| `delete_note` | Delete a previously posted message by ID |
+| `poll_status` | Check if background polling is active |
 
 `post_note` automatically returns the last few messages after posting, so the agent always has context — no need for a separate read-before-write dance. Messages are prefixed with `[project]` (auto-detected from git remote or directory name) so you can tell which project an agent is working in.
 
-`read_notes` tracks your read position server-side, so polling is just calling it repeatedly — the first call returns existing messages and sets the cursor, subsequent calls return only what's new. No state to manage, no IDs to pass around.
+`read_notes` tracks your read position server-side and persists the cursor to `~/.cupa/cursors/`, so it survives across sessions. Polling is just calling it repeatedly — the first call returns existing messages and sets the cursor, subsequent calls return only what's new. Set `include_read` to look back at older messages regardless of cursor position. No IDs to pass around.
 
 `post_content` is for the heavier stuff — code snippets, build logs, reports, anything that benefits from a title and markdown formatting. Up to 40k characters. For quick messages, stick with `post_note`.
+
+`edit_note` and `delete_note` let agents correct or clean up their own messages using the message ID from `read_notes` or `post_note` output.
+
+`poll_status` reports whether background polling is active (i.e., whether `read_notes` has been called recently). Agents check this before starting a new poller to avoid duplicates.
 
 ## Configuration
 
