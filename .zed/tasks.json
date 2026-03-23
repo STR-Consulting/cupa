@@ -1,0 +1,9 @@
+[
+  {
+    "label": "Install",
+    "command": "bash",
+    "args": ["scripts/install.sh"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["install"]
+  }
+]

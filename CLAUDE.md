@@ -19,7 +19,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 |------|-------------|
 | `check_setup` | Check config status, show setup instructions for token/workspace/channel |
 | `post_note` | Post a message (auto-prefixed with sender if configured), returns recent messages for context |
-| `read_notes` | Read messages; pass `after_message_id` for incremental polling (returns chronological order + `latest_message_id`) |
+| `read_notes` | Read messages; server tracks read position automatically (first call returns all, subsequent calls return only new) |
 | `post_content` | Share rich markdown content as a titled post (code, logs, reports); up to 40k chars |
 
 ### Monitoring for messages
@@ -32,7 +32,6 @@ The MCP server tracks the last-read message ID in memory. Each `read_notes` call
 4. Process new messages, respond via `post_note`, launch another background polling agent
 
 No state needs to be passed between polling cycles — the server tracks the read position.
-The `after_message_id` parameter is still available for explicit cursor control if needed.
 
 ### ClickUp API
 

@@ -1,6 +1,6 @@
 # cupa
 
-An MCP server that lets Claude Code agents talk to each other through a ClickUp Chat channel. Post messages, read the conversation, wait for replies — the three things you actually need for cross-agent coordination, and *nothing else*.
+An MCP server that lets Claude Code agents talk to each other through a ClickUp Chat channel. Post messages, read the conversation, share code and logs — the things you actually need for cross-agent coordination, and *nothing else*.
 
 One binary. One env var. An optional config file if you're feeling fancy. No databases, no existential dread (well — maybe a little, given what we're building here).
 
@@ -9,13 +9,13 @@ One binary. One env var. An optional config file if you're feeling fancy. No dat
 ### macOS (Homebrew)
 
 ```
-brew install STR-Consulting/cupa/cupa
+brew install STR-Consulting/tap/cupa
 ```
 
 ### Windows (Scoop)
 
 ```
-scoop bucket add cupa https://github.com/STR-Consulting/scoop-cupa
+scoop bucket add pacer https://github.com/STR-Consulting/scoop-bucket
 scoop install cupa
 ```
 
@@ -52,12 +52,14 @@ That's it. Claude Code will launch `cupa` as a child process and the tools appea
 |------|-------------|
 | `check_setup` | Diagnose config issues and show setup instructions |
 | `post_note` | Post a message and return recent channel context |
-| `read_notes` | Read recent messages, newest first |
-| `wait_for_reply` | Long-poll until someone posts after a given message ID |
+| `read_notes` | Read messages (server tracks position — first call returns all, subsequent calls return only new) |
+| `post_content` | Share rich markdown content as a titled post (code, logs, reports) |
 
 `post_note` automatically returns the last few messages after posting, so the agent always has context — no need for a separate read-before-write dance. Messages are prefixed with `[project]` (auto-detected from git remote or directory name) so you can tell which project an agent is working in.
 
-`wait_for_reply` polls every 5 seconds, times out after 60 (configurable), and respects context cancellation — so Claude Code can interrupt it if it gets bored waiting. Which, frankly, is relatable.
+`read_notes` tracks your read position server-side, so polling is just calling it repeatedly — the first call returns existing messages and sets the cursor, subsequent calls return only what's new. No state to manage, no IDs to pass around.
+
+`post_content` is for the heavier stuff — code snippets, build logs, reports, anything that benefits from a title and markdown formatting. Up to 40k characters. For quick messages, stick with `post_note`.
 
 ## Configuration
 
@@ -84,7 +86,7 @@ go test ./...
 golangci-lint run --fix ./...
 ```
 
-Releases are automated — push a `v*` tag and GitHub Actions builds macOS (arm64) and Windows (amd64) binaries, then updates the [Homebrew tap](https://github.com/STR-Consulting/homebrew-cupa) and [Scoop bucket](https://github.com/STR-Consulting/scoop-cupa).
+Releases are automated — push a `v*` tag and GitHub Actions builds macOS (arm64) and Windows (amd64) binaries, then updates the [Homebrew tap](https://github.com/STR-Consulting/homebrew-tap) and [Scoop bucket](https://github.com/STR-Consulting/scoop-bucket).
 
 ## License
 

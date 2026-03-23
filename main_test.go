@@ -215,9 +215,6 @@ func TestHandleReadNotes(t *testing.T) {
 	if contains(text, "oldest") {
 		t.Errorf("should not contain oldest with limit=2, got: %s", text)
 	}
-	if !contains(text, "latest_message_id: 3") {
-		t.Errorf("expected latest_message_id footer, got: %s", text)
-	}
 }
 
 func TestHandleReadNotesDefaultLimit(t *testing.T) {
@@ -591,7 +588,7 @@ func TestHandleCheckSetupTokenSet(t *testing.T) {
 	}
 }
 
-func TestHandleReadNotesAfterMessageID(t *testing.T) {
+func TestHandleReadNotesCursorFiltersOldMessages(t *testing.T) {
 	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
@@ -602,7 +599,12 @@ func TestHandleReadNotesAfterMessageID(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
 	}))
 
-	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 150})
+	// Manually set cursor to 150 to simulate a previous read.
+	lastRead.mu.Lock()
+	lastRead.id = 150
+	lastRead.mu.Unlock()
+
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,13 +625,9 @@ func TestHandleReadNotesAfterMessageID(t *testing.T) {
 	if midIdx > newIdx {
 		t.Errorf("expected chronological order (middle before newest), got: %s", text)
 	}
-	// Should include latest_message_id footer.
-	if !contains(text, "latest_message_id: 300") {
-		t.Errorf("expected latest_message_id: 300, got: %s", text)
-	}
 }
 
-func TestHandleReadNotesAfterMessageIDNoNew(t *testing.T) {
+func TestHandleReadNotesCursorNoNewMessages(t *testing.T) {
 	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("100"), Content: "old", Date: json.Number("1704067000000"), UserID: "a"},
@@ -638,7 +636,12 @@ func TestHandleReadNotesAfterMessageIDNoNew(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
 	}))
 
-	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 200})
+	// Set cursor past all messages.
+	lastRead.mu.Lock()
+	lastRead.id = 200
+	lastRead.mu.Unlock()
+
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,12 +649,9 @@ func TestHandleReadNotesAfterMessageIDNoNew(t *testing.T) {
 	if !contains(text, "No new messages") {
 		t.Errorf("expected 'No new messages', got: %s", text)
 	}
-	if !contains(text, "latest_message_id: 100") {
-		t.Errorf("expected latest_message_id: 100, got: %s", text)
-	}
 }
 
-func TestHandleReadNotesAfterMessageIDWithLimit(t *testing.T) {
+func TestHandleReadNotesCursorWithLimit(t *testing.T) {
 	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("400"), Content: "d", Date: json.Number("1704067300000"), UserID: "a"},
@@ -663,20 +663,20 @@ func TestHandleReadNotesAfterMessageIDWithLimit(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
 	}))
 
-	// 3 messages after ID 100 (200, 300, 400), but limit to 2.
-	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 100, Limit: 2})
+	// Set cursor at 100 — 3 new messages (200, 300, 400), but limit to 2.
+	lastRead.mu.Lock()
+	lastRead.id = 100
+	lastRead.mu.Unlock()
+
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
-	// Count message separators to verify limit.
+	// Count message separators to verify limit: 2 messages = 1 separator.
 	separators := strings.Count(text, "\n---\n")
-	// With 2 messages there should be 1 separator (between messages) plus the footer separator.
-	if separators != 2 {
-		t.Errorf("expected 2 separators (1 between messages + 1 footer), got %d in: %s", separators, text)
-	}
-	if !contains(text, "latest_message_id: 400") {
-		t.Errorf("expected latest_message_id: 400, got: %s", text)
+	if separators != 1 {
+		t.Errorf("expected 1 separator between 2 messages, got %d in: %s", separators, text)
 	}
 }
 
@@ -758,35 +758,6 @@ func TestHandleReadNotesAutoTrackingWithNewMessages(t *testing.T) {
 	}
 	if contains(text, "initial") {
 		t.Errorf("second call should not return old message, got: %s", text)
-	}
-}
-
-func TestHandleReadNotesExplicitAfterIDUpdatesLastRead(t *testing.T) {
-	resetLastRead()
-
-	msgs := []message{
-		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
-		{ID: json.Number("200"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
-		{ID: json.Number("100"), Content: "oldest", Date: json.Number("1704067000000"), UserID: "c"},
-	}
-	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
-	}))
-
-	// Call with explicit after_message_id — should still update internal cursor.
-	_, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 150})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Now call without after_message_id — cursor should be at 300.
-	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "No new messages") {
-		t.Errorf("expected no new messages after cursor advanced to 300, got: %s", text)
 	}
 }
 

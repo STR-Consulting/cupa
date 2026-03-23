@@ -380,8 +380,7 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 // --- Tool: read_notes ---
 
 type readNotesArgs struct {
-	Limit          int   `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
-	AfterMessageID int64 `json:"after_message_id" jsonschema:"Only return messages with ID greater than this value (for incremental polling)"`
+	Limit int `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
 }
 
 func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotesArgs) (*mcp.CallToolResult, any, error) {
@@ -401,16 +400,12 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 		latestID, _ = messages[0].ID.Int64()
 	}
 
-	// Use explicit after_message_id if provided, otherwise fall back to
-	// the server-side cursor for automatic incremental polling.
-	afterID := args.AfterMessageID
-	if afterID == 0 {
-		lastRead.mu.Lock()
-		afterID = lastRead.id
-		lastRead.mu.Unlock()
-	}
+	// Get the server-side cursor.
+	lastRead.mu.Lock()
+	afterID := lastRead.id
+	lastRead.mu.Unlock()
 
-	// Advance the server-side cursor to the latest message.
+	// Advance the cursor to the latest message.
 	if latestID > 0 {
 		lastRead.mu.Lock()
 		if latestID > lastRead.id {
@@ -424,9 +419,7 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 		messages = messagesAfter(messages, afterID)
 		if len(messages) == 0 {
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{
-					Text: fmt.Sprintf("No new messages\n\n---\nlatest_message_id: %d", latestID),
-				}},
+				Content: []mcp.Content{&mcp.TextContent{Text: "No new messages"}},
 			}, nil, nil
 		}
 		slices.Reverse(messages)
@@ -434,9 +427,7 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 			messages = messages[:limit]
 		}
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("%s\n\n---\nlatest_message_id: %d", formatMessages(messages), latestID),
-			}},
+			Content: []mcp.Content{&mcp.TextContent{Text: formatMessages(messages)}},
 		}, nil, nil
 	}
 
@@ -446,14 +437,12 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 
 	if len(messages) == 0 {
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "No messages found\n\n---\nlatest_message_id: 0"}},
+			Content: []mcp.Content{&mcp.TextContent{Text: "No messages found"}},
 		}, nil, nil
 	}
 
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{
-			Text: fmt.Sprintf("%s\n\n---\nlatest_message_id: %d", formatMessages(messages), latestID),
-		}},
+		Content: []mcp.Content{&mcp.TextContent{Text: formatMessages(messages)}},
 	}, nil, nil
 }
 
@@ -612,7 +601,7 @@ func main() {
 			"When the background agent returns with new messages, process and respond via post_note, " +
 			"then launch another background polling agent. " +
 			"The server tracks your read position automatically — each read_notes call returns only " +
-			"messages you haven't seen yet. No need to pass after_message_id for polling.",
+			"messages you haven't seen yet.",
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -628,9 +617,8 @@ func main() {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "read_notes",
 		Description: "Read messages from the Agent Notes channel. " +
-			"The server automatically tracks your read position — subsequent calls return only new messages. " +
-			"Pass after_message_id to override the automatic cursor. " +
-			"Response always includes latest_message_id.",
+			"The server tracks your read position automatically — " +
+			"the first call returns existing messages, subsequent calls return only new messages.",
 	}, handleReadNotes)
 
 	mcp.AddTool(server, &mcp.Tool{
