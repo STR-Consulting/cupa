@@ -66,6 +66,25 @@ Each message:
 - `replies_count` — int
 - `resolved` — bool
 
+### Edit Message
+
+```
+PATCH /workspaces/{workspace_id}/chat/messages/{message_id}
+Content-Type: application/json
+
+{"content": "updated text"}
+```
+
+Response: same shape as Send Message response.
+
+### Delete Message
+
+```
+DELETE /workspaces/{workspace_id}/chat/messages/{message_id}
+```
+
+Response: empty body on success.
+
 ### Get Thread / Specific Message
 
 ```

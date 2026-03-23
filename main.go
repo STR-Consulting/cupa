@@ -103,6 +103,10 @@ func messagesPath() string {
 	return "/workspaces/" + cfg.WorkspaceID + "/chat/channels/" + cfg.ChannelID + "/messages"
 }
 
+func messagePath(id string) string {
+	return "/workspaces/" + cfg.WorkspaceID + "/chat/messages/" + id
+}
+
 // rateLimiter enforces minimum gap between ClickUp API calls.
 var rateLimiter = struct {
 	mu   sync.Mutex
@@ -637,6 +641,62 @@ func handlePostContent(ctx context.Context, _ *mcp.CallToolRequest, args postCon
 	}, nil, nil
 }
 
+// --- Tool: edit_note ---
+
+type editNoteArgs struct {
+	MessageID string `json:"message_id" jsonschema:"ID of the message to edit"`
+	Content   string `json:"content" jsonschema:"New content for the message"`
+}
+
+func handleEditNote(ctx context.Context, _ *mcp.CallToolRequest, args editNoteArgs) (*mcp.CallToolResult, any, error) {
+	if args.MessageID == "" {
+		return toolError("message_id is required"), nil, nil
+	}
+	if args.Content == "" {
+		return toolError("content is required"), nil, nil
+	}
+
+	body := map[string]string{"content": args.Content}
+	data, err := clickupRequest(ctx, http.MethodPatch, messagePath(args.MessageID), body)
+	if err != nil {
+		return toolError(err.Error()), nil, nil
+	}
+
+	var edited message
+	if err := json.Unmarshal(data, &edited); err != nil {
+		return toolError(fmt.Sprintf("parse response: %v", err)), nil, nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{
+			Text: fmt.Sprintf("Edited message %s", edited.ID),
+		}},
+	}, nil, nil
+}
+
+// --- Tool: delete_note ---
+
+type deleteNoteArgs struct {
+	MessageID string `json:"message_id" jsonschema:"ID of the message to delete"`
+}
+
+func handleDeleteNote(ctx context.Context, _ *mcp.CallToolRequest, args deleteNoteArgs) (*mcp.CallToolResult, any, error) {
+	if args.MessageID == "" {
+		return toolError("message_id is required"), nil, nil
+	}
+
+	_, err := clickupRequest(ctx, http.MethodDelete, messagePath(args.MessageID), nil)
+	if err != nil {
+		return toolError(err.Error()), nil, nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{
+			Text: fmt.Sprintf("Deleted message %s", args.MessageID),
+		}},
+	}, nil, nil
+}
+
 func main() {
 	log.SetOutput(os.Stderr)
 
@@ -687,6 +747,16 @@ func main() {
 			"Use this for code snippets, logs, error output, reports, or any structured text that benefits from a title and formatting. " +
 			"Content supports markdown (up to 40000 chars). For short plain-text messages, use post_note instead.",
 	}, handlePostContent)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "edit_note",
+		Description: "Edit a previously posted message. Use the message ID from read_notes or post_note output.",
+	}, handleEditNote)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_note",
+		Description: "Delete a previously posted message. Use the message ID from read_notes or post_note output.",
+	}, handleDeleteNote)
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("Server failed: %v", err)

@@ -40,25 +40,65 @@ func loadConfigForTest(t *testing.T) {
 	}
 }
 
+// postTestNote posts a message and registers it for cleanup (edit then delete).
+func postTestNote(t *testing.T, ctx context.Context, ids *[]string, content string) {
+	t.Helper()
+	result, _, err := handlePostNote(ctx, nil, postNoteArgs{Content: content})
+	if err != nil {
+		t.Fatalf("post %q: %v", content, err)
+	}
+	if result.IsError {
+		t.Fatalf("post %q error: %s", content, result.Content[0].(*mcp.TextContent).Text)
+	}
+	// Extract message ID from "Posted message NNNN" response.
+	text := result.Content[0].(*mcp.TextContent).Text
+	if id, ok := strings.CutPrefix(text, "Posted message "); ok {
+		if id, _, ok := strings.Cut(id, "\n"); ok {
+			*ids = append(*ids, id)
+		}
+	}
+}
+
+// cleanupMessages edits each message to "[deleted by test]" then deletes it.
+func cleanupMessages(t *testing.T, ctx context.Context, ids []string) {
+	t.Helper()
+	for _, id := range ids {
+		// Edit first to validate edit_note works.
+		result, _, err := handleEditNote(ctx, nil, editNoteArgs{
+			MessageID: id,
+			Content:   "[deleted by test]",
+		})
+		if err != nil {
+			t.Logf("cleanup edit %s: %v", id, err)
+		} else if result.IsError {
+			t.Logf("cleanup edit %s: %s", id, result.Content[0].(*mcp.TextContent).Text)
+		}
+
+		// Delete.
+		result, _, err = handleDeleteNote(ctx, nil, deleteNoteArgs{MessageID: id})
+		if err != nil {
+			t.Logf("cleanup delete %s: %v", id, err)
+		} else if result.IsError {
+			t.Logf("cleanup delete %s: %s", id, result.Content[0].(*mcp.TextContent).Text)
+		}
+	}
+}
+
 func TestIntegrationPollingCycle(t *testing.T) {
 	skipWithoutToken(t)
 	resetLastRead()
 
 	ctx := context.Background()
 	tag := fmt.Sprintf("integration-test-%d", time.Now().UnixMilli())
+	var messageIDs []string
+	t.Cleanup(func() { cleanupMessages(t, ctx, messageIDs) })
 
 	// Step 1: Post an initial message.
-	result, _, err := handlePostNote(ctx, nil, postNoteArgs{Content: tag + " msg-1"})
-	if err != nil {
-		t.Fatalf("post msg-1: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("post msg-1 error: %s", result.Content[0].(*mcp.TextContent).Text)
-	}
+	postTestNote(t, ctx, &messageIDs, tag+" msg-1")
 	t.Logf("posted msg-1")
 
 	// Step 2: First read — establishes cursor, should see msg-1.
-	result, _, err = handleReadNotes(ctx, nil, readNotesArgs{})
+	result, _, err := handleReadNotes(ctx, nil, readNotesArgs{})
 	if err != nil {
 		t.Fatalf("initial read: %v", err)
 	}
@@ -80,13 +120,7 @@ func TestIntegrationPollingCycle(t *testing.T) {
 	t.Logf("poll returned no new messages — correct")
 
 	// Step 4: Post a second message.
-	result, _, err = handlePostNote(ctx, nil, postNoteArgs{Content: tag + " msg-2"})
-	if err != nil {
-		t.Fatalf("post msg-2: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("post msg-2 error: %s", result.Content[0].(*mcp.TextContent).Text)
-	}
+	postTestNote(t, ctx, &messageIDs, tag+" msg-2")
 	t.Logf("posted msg-2")
 
 	// Step 5: Poll — should see only msg-2, not msg-1.
@@ -121,24 +155,20 @@ func TestIntegrationIncludeRead(t *testing.T) {
 
 	ctx := context.Background()
 	tag := fmt.Sprintf("integration-test-%d", time.Now().UnixMilli())
+	var messageIDs []string
+	t.Cleanup(func() { cleanupMessages(t, ctx, messageIDs) })
 
 	// Post a message.
-	result, _, err := handlePostNote(ctx, nil, postNoteArgs{Content: tag + " history"})
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("post error: %s", result.Content[0].(*mcp.TextContent).Text)
-	}
+	postTestNote(t, ctx, &messageIDs, tag+" history")
 
 	// Read to advance cursor.
-	_, _, err = handleReadNotes(ctx, nil, readNotesArgs{})
+	_, _, err := handleReadNotes(ctx, nil, readNotesArgs{})
 	if err != nil {
 		t.Fatalf("initial read: %v", err)
 	}
 
 	// Normal poll — no new messages.
-	result, _, err = handleReadNotes(ctx, nil, readNotesArgs{})
+	result, _, err := handleReadNotes(ctx, nil, readNotesArgs{})
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -168,4 +198,55 @@ func TestIntegrationIncludeRead(t *testing.T) {
 		t.Fatalf("post-include poll should be empty, got:\n%s", text)
 	}
 	t.Logf("cursor intact after include_read — all good")
+}
+
+func TestIntegrationEditAndDelete(t *testing.T) {
+	skipWithoutToken(t)
+
+	ctx := context.Background()
+	tag := fmt.Sprintf("integration-test-%d", time.Now().UnixMilli())
+	var messageIDs []string
+	t.Cleanup(func() { cleanupMessages(t, ctx, messageIDs) })
+
+	// Post a message.
+	postTestNote(t, ctx, &messageIDs, tag+" to-edit")
+	if len(messageIDs) == 0 {
+		t.Fatal("no message ID captured")
+	}
+	msgID := messageIDs[0]
+	t.Logf("posted message %s", msgID)
+
+	// Edit it.
+	result, _, err := handleEditNote(ctx, nil, editNoteArgs{
+		MessageID: msgID,
+		Content:   tag + " edited",
+	})
+	if err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %s", result.Content[0].(*mcp.TextContent).Text)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, msgID) {
+		t.Fatalf("edit response should contain message ID, got: %s", text)
+	}
+	t.Logf("edited message — correct")
+
+	// Delete it (cleanup will also try, but that's fine).
+	result, _, err = handleDeleteNote(ctx, nil, deleteNoteArgs{MessageID: msgID})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("delete error: %s", result.Content[0].(*mcp.TextContent).Text)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, msgID) {
+		t.Fatalf("delete response should contain message ID, got: %s", text)
+	}
+	t.Logf("deleted message — correct")
+
+	// Clear from cleanup list since already deleted.
+	messageIDs = nil
 }
