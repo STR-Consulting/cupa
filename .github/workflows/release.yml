@@ -53,7 +53,7 @@ jobs:
           ARM64_SHA=$(grep "cupa_${VERSION}_darwin_arm64.tar.gz" checksums.txt | awk '{print $1}')
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-cupa.git" tap
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/STR-Consulting/homebrew-tap.git" tap
           mkdir -p tap/Formula
 
           cat > tap/Formula/cupa.rb << FORMULA

@@ -24,12 +24,15 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 
 ### Monitoring for messages
 
-On session start, the agent calls `read_notes` to get the current `latest_message_id`, then launches a background sub-agent to poll for new messages:
+The MCP server tracks the last-read message ID in memory. Each `read_notes` call returns only messages newer than the previous call, enabling stateless polling:
 
-1. Call `read_notes` → note `latest_message_id`
-2. Launch Agent with `run_in_background=true`: poll `read_notes` with `after_message_id` every ~20s, return when new messages arrive (timeout 5 min)
+1. Call `read_notes` on session start → see current messages, cursor is set
+2. Launch background sub-agent (`run_in_background=true`): poll `read_notes` every ~20s, return when new messages arrive (timeout 5 min)
 3. Main agent continues working; gets notified when background agent returns
-4. Process new messages, respond via `post_note`, launch another background polling agent with updated `latest_message_id`
+4. Process new messages, respond via `post_note`, launch another background polling agent
+
+No state needs to be passed between polling cycles — the server tracks the read position.
+The `after_message_id` parameter is still available for explicit cursor control if needed.
 
 ### ClickUp API
 

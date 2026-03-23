@@ -190,6 +190,7 @@ func TestHandlePostNoteEmptyContent(t *testing.T) {
 }
 
 func TestHandleReadNotes(t *testing.T) {
+	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("3"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
 		{ID: json.Number("2"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
@@ -220,6 +221,7 @@ func TestHandleReadNotes(t *testing.T) {
 }
 
 func TestHandleReadNotesDefaultLimit(t *testing.T) {
+	resetLastRead()
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{}})
 	}))
@@ -590,6 +592,7 @@ func TestHandleCheckSetupTokenSet(t *testing.T) {
 }
 
 func TestHandleReadNotesAfterMessageID(t *testing.T) {
+	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
 		{ID: json.Number("200"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
@@ -627,6 +630,7 @@ func TestHandleReadNotesAfterMessageID(t *testing.T) {
 }
 
 func TestHandleReadNotesAfterMessageIDNoNew(t *testing.T) {
+	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("100"), Content: "old", Date: json.Number("1704067000000"), UserID: "a"},
 	}
@@ -648,6 +652,7 @@ func TestHandleReadNotesAfterMessageIDNoNew(t *testing.T) {
 }
 
 func TestHandleReadNotesAfterMessageIDWithLimit(t *testing.T) {
+	resetLastRead()
 	msgs := []message{
 		{ID: json.Number("400"), Content: "d", Date: json.Number("1704067300000"), UserID: "a"},
 		{ID: json.Number("300"), Content: "c", Date: json.Number("1704067200000"), UserID: "a"},
@@ -672,6 +677,116 @@ func TestHandleReadNotesAfterMessageIDWithLimit(t *testing.T) {
 	}
 	if !contains(text, "latest_message_id: 400") {
 		t.Errorf("expected latest_message_id: 400, got: %s", text)
+	}
+}
+
+func resetLastRead() {
+	lastRead.mu.Lock()
+	lastRead.id = 0
+	lastRead.mu.Unlock()
+}
+
+func TestHandleReadNotesAutoTracking(t *testing.T) {
+	resetLastRead()
+
+	msgs := []message{
+		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
+		{ID: json.Number("200"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
+		{ID: json.Number("100"), Content: "oldest", Date: json.Number("1704067000000"), UserID: "c"},
+	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
+	}))
+
+	// First call: no cursor set, should return all messages.
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "newest") || !contains(text, "oldest") {
+		t.Errorf("first call should return all messages, got: %s", text)
+	}
+
+	// Second call: cursor should be at 300, so no new messages.
+	result, _, err = handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "No new messages") {
+		t.Errorf("second call should return no new messages, got: %s", text)
+	}
+}
+
+func TestHandleReadNotesAutoTrackingWithNewMessages(t *testing.T) {
+	resetLastRead()
+
+	callCount := 0
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		if callCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
+				{ID: json.Number("200"), Content: "initial", Date: json.Number("1704067100000"), UserID: "a"},
+			}})
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []message{
+				{ID: json.Number("300"), Content: "new msg", Date: json.Number("1704067200000"), UserID: "b"},
+				{ID: json.Number("200"), Content: "initial", Date: json.Number("1704067100000"), UserID: "a"},
+			}})
+		}
+	}))
+
+	// First call: returns initial message, sets cursor to 200.
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "initial") {
+		t.Errorf("first call should return initial message, got: %s", text)
+	}
+
+	// Second call: new message arrived (300), cursor was at 200.
+	result, _, err = handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "new msg") {
+		t.Errorf("second call should return new message, got: %s", text)
+	}
+	if contains(text, "initial") {
+		t.Errorf("second call should not return old message, got: %s", text)
+	}
+}
+
+func TestHandleReadNotesExplicitAfterIDUpdatesLastRead(t *testing.T) {
+	resetLastRead()
+
+	msgs := []message{
+		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
+		{ID: json.Number("200"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
+		{ID: json.Number("100"), Content: "oldest", Date: json.Number("1704067000000"), UserID: "c"},
+	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
+	}))
+
+	// Call with explicit after_message_id — should still update internal cursor.
+	_, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{AfterMessageID: 150})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now call without after_message_id — cursor should be at 300.
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "No new messages") {
+		t.Errorf("expected no new messages after cursor advanced to 300, got: %s", text)
 	}
 }
 

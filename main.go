@@ -109,6 +109,13 @@ var rateLimiter = struct {
 	last time.Time
 }{}
 
+// lastRead tracks the most recent message ID returned by read_notes,
+// enabling automatic incremental polling without caller-managed state.
+var lastRead struct {
+	mu sync.Mutex
+	id int64
+}
+
 func clickupRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
 	token := os.Getenv("CLICKUP_TOKEN")
 	if token == "" {
@@ -394,9 +401,27 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 		latestID, _ = messages[0].ID.Int64()
 	}
 
-	// If after_message_id is set, filter and return chronological order.
-	if args.AfterMessageID > 0 {
-		messages = messagesAfter(messages, args.AfterMessageID)
+	// Use explicit after_message_id if provided, otherwise fall back to
+	// the server-side cursor for automatic incremental polling.
+	afterID := args.AfterMessageID
+	if afterID == 0 {
+		lastRead.mu.Lock()
+		afterID = lastRead.id
+		lastRead.mu.Unlock()
+	}
+
+	// Advance the server-side cursor to the latest message.
+	if latestID > 0 {
+		lastRead.mu.Lock()
+		if latestID > lastRead.id {
+			lastRead.id = latestID
+		}
+		lastRead.mu.Unlock()
+	}
+
+	// If we have a cursor, filter and return chronological order.
+	if afterID > 0 {
+		messages = messagesAfter(messages, afterID)
 		if len(messages) == 0 {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{
@@ -574,20 +599,20 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.8.0",
+		Version: "0.9.0",
 	}, &mcp.ServerOptions{
 		Instructions: "cupa provides cross-agent messaging via ClickUp Chat. " +
 			"Use post_note to send messages and read_notes to check for messages. " +
 			"Use post_content to share rich markdown content (code, logs, reports) as a titled post. " +
 			"Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.\n\n" +
-			"IMPORTANT: On session start, call read_notes to get the current latest_message_id, " +
-			"then launch a background sub-agent to poll for new messages. Use the Agent tool with " +
-			"run_in_background=true and prompt it to: call read_notes with after_message_id set to " +
-			"the latest_message_id, sleep 20 seconds and retry if no new messages, and return the " +
-			"new messages once found (up to 5 minutes). When the background agent returns with new " +
-			"messages, process and respond to them, then launch another background polling agent " +
-			"with the updated latest_message_id. This keeps the chat responsive without blocking.",
+			"IMPORTANT: On session start, call read_notes to see current messages and establish the read cursor. " +
+			"Then launch a background sub-agent (Agent tool, run_in_background=true) to poll for new messages: " +
+			"call read_notes, sleep 20 seconds if no new messages, retry until messages arrive (up to 5 minutes). " +
+			"When the background agent returns with new messages, process and respond via post_note, " +
+			"then launch another background polling agent. " +
+			"The server tracks your read position automatically — each read_notes call returns only " +
+			"messages you haven't seen yet. No need to pass after_message_id for polling.",
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -603,8 +628,9 @@ func main() {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "read_notes",
 		Description: "Read messages from the Agent Notes channel. " +
-			"Pass after_message_id to get only new messages since your last read (returns chronological order). " +
-			"Response always includes latest_message_id for use in subsequent calls.",
+			"The server automatically tracks your read position — subsequent calls return only new messages. " +
+			"Pass after_message_id to override the automatic cursor. " +
+			"Response always includes latest_message_id.",
 	}, handleReadNotes)
 
 	mcp.AddTool(server, &mcp.Tool{
