@@ -710,9 +710,252 @@ func handleDeleteNote(ctx context.Context, _ *mcp.CallToolRequest, args deleteNo
 	}, nil, nil
 }
 
-// --- Tool: poll_status ---
+// --- Monitoring subsystem ---
 
-const pollActiveThreshold = 60 * time.Second
+const defaultMonitorInterval = 20 * time.Second
+
+// mcpServer is set in main() so the monitor goroutine can send notifications.
+var mcpServer *mcp.Server
+
+var monitor struct {
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	running bool
+}
+
+func isMonitoring() bool {
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	return monitor.running
+}
+
+func startMonitor(interval time.Duration) bool {
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	if monitor.running {
+		return false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	monitor.cancel = cancel
+	monitor.running = true
+	go monitorLoop(ctx, interval)
+	return true
+}
+
+func stopMonitor() bool {
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	if !monitor.running {
+		return false
+	}
+	monitor.cancel()
+	monitor.cancel = nil
+	monitor.running = false
+	return true
+}
+
+func monitorLoop(ctx context.Context, interval time.Duration) {
+	defer func() {
+		monitor.mu.Lock()
+		monitor.running = false
+		monitor.mu.Unlock()
+	}()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			msgs, err := readMessages(ctx)
+			if err != nil {
+				log.Printf("monitor: read error: %v", err)
+				continue
+			}
+
+			lastRead.mu.Lock()
+			afterID := lastRead.id
+			lastRead.mu.Unlock()
+
+			newMsgs := messagesAfter(msgs, afterID)
+			if len(newMsgs) == 0 {
+				continue
+			}
+
+			// Update cursor.
+			var latestID int64
+			for _, m := range newMsgs {
+				if id, _ := m.ID.Int64(); id > latestID {
+					latestID = id
+				}
+			}
+			if latestID > 0 {
+				lastRead.mu.Lock()
+				if latestID > lastRead.id {
+					lastRead.id = latestID
+				}
+				lastRead.lastPoll = time.Now()
+				lastRead.mu.Unlock()
+				saveCursor(latestID)
+			}
+
+			// Format and push to all sessions via logging notification.
+			slices.Reverse(newMsgs)
+			text := fmt.Sprintf("New agent notes (%d):\n\n%s", len(newMsgs), formatMessages(newMsgs))
+
+			for ss := range mcpServer.Sessions() {
+				if err := ss.Log(ctx, &mcp.LoggingMessageParams{
+					Level:  "notice",
+					Logger: "monitor",
+					Data:   text,
+				}); err != nil {
+					log.Printf("monitor: log notify error: %v", err)
+				}
+			}
+		}
+	}
+}
+
+// --- Tool: start_monitoring ---
+
+type startMonitoringArgs struct {
+	Interval int `json:"interval" jsonschema:"Polling interval in seconds (default 20, min 10)"`
+}
+
+func handleStartMonitoring(ctx context.Context, _ *mcp.CallToolRequest, args startMonitoringArgs) (*mcp.CallToolResult, any, error) {
+	if isMonitoring() {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Already monitoring — call stop_monitoring first to restart with different settings"}},
+		}, nil, nil
+	}
+
+	interval := time.Duration(args.Interval) * time.Second
+	if interval < 10*time.Second {
+		interval = defaultMonitorInterval
+	}
+
+	// Do an initial read to establish the cursor before starting the monitor.
+	msgs, err := readMessages(ctx)
+	if err != nil {
+		return toolError(fmt.Sprintf("Failed to read initial messages: %v", err)), nil, nil
+	}
+
+	// Set cursor to latest message so monitor only reports truly new messages.
+	if len(msgs) > 0 {
+		if latestID, _ := msgs[0].ID.Int64(); latestID > 0 {
+			lastRead.mu.Lock()
+			if latestID > lastRead.id {
+				lastRead.id = latestID
+			}
+			lastRead.lastPoll = time.Now()
+			lastRead.mu.Unlock()
+			saveCursor(latestID)
+		}
+	}
+
+	startMonitor(interval)
+
+	var result strings.Builder
+	fmt.Fprintf(&result, "Monitoring started (polling every %s). New messages will be delivered via notifications.\n", interval)
+	fmt.Fprintf(&result, "Call stop_monitoring to stop.\n\n")
+
+	// Return current messages for context.
+	if len(msgs) > 0 {
+		show := msgs[:min(len(msgs), 5)]
+		result.WriteString("## Recent messages\n\n")
+		result.WriteString(formatMessages(show))
+	} else {
+		result.WriteString("No messages yet.")
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: result.String()}},
+	}, nil, nil
+}
+
+// --- Tool: await_messages ---
+
+type awaitMessagesArgs struct {
+	Interval int `json:"interval" jsonschema:"Polling interval in seconds (default 20, min 10)"`
+}
+
+func handleAwaitMessages(ctx context.Context, _ *mcp.CallToolRequest, args awaitMessagesArgs) (*mcp.CallToolResult, any, error) {
+	interval := time.Duration(args.Interval) * time.Second
+	if interval < 10*time.Second {
+		interval = defaultMonitorInterval
+	}
+
+	// Snapshot the cursor at call time so we don't race with the monitor goroutine.
+	lastRead.mu.Lock()
+	afterID := lastRead.id
+	lastRead.mu.Unlock()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "Stopped waiting (session ended)"}},
+			}, nil, nil
+		case <-ticker.C:
+			msgs, err := readMessages(ctx)
+			if err != nil {
+				log.Printf("await_messages: read error: %v", err)
+				continue
+			}
+
+			newMsgs := messagesAfter(msgs, afterID)
+			if len(newMsgs) == 0 {
+				continue
+			}
+
+			// Update the shared cursor.
+			var latestID int64
+			for _, m := range newMsgs {
+				if id, _ := m.ID.Int64(); id > latestID {
+					latestID = id
+				}
+			}
+			if latestID > 0 {
+				lastRead.mu.Lock()
+				if latestID > lastRead.id {
+					lastRead.id = latestID
+				}
+				lastRead.lastPoll = time.Now()
+				lastRead.mu.Unlock()
+				saveCursor(latestID)
+			}
+
+			slices.Reverse(newMsgs)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: fmt.Sprintf("New messages (%d):\n\n%s", len(newMsgs), formatMessages(newMsgs)),
+				}},
+			}, nil, nil
+		}
+	}
+}
+
+// --- Tool: stop_monitoring ---
+
+type stopMonitoringArgs struct{}
+
+func handleStopMonitoring(_ context.Context, _ *mcp.CallToolRequest, _ stopMonitoringArgs) (*mcp.CallToolResult, any, error) {
+	if stopMonitor() {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Monitoring stopped"}},
+		}, nil, nil
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "Not currently monitoring"}},
+	}, nil, nil
+}
+
+// --- Tool: poll_status ---
 
 type pollStatusArgs struct{}
 
@@ -721,15 +964,22 @@ func handlePollStatus(_ context.Context, _ *mcp.CallToolRequest, _ pollStatusArg
 	lastPoll := lastRead.lastPoll
 	lastRead.mu.Unlock()
 
+	monitoring := isMonitoring()
+
 	var status string
-	if lastPoll.IsZero() {
-		status = "Inactive — read_notes has not been called this session"
-	} else {
-		ago := time.Since(lastPoll).Truncate(time.Second)
-		if ago < pollActiveThreshold {
-			status = fmt.Sprintf("Active — last polled %s ago", ago)
+	if monitoring {
+		if lastPoll.IsZero() {
+			status = "Monitoring active — no messages received yet"
 		} else {
-			status = fmt.Sprintf("Inactive — last polled %s ago", ago)
+			ago := time.Since(lastPoll).Truncate(time.Second)
+			status = fmt.Sprintf("Monitoring active — last checked %s ago", ago)
+		}
+	} else {
+		if lastPoll.IsZero() {
+			status = "Inactive — call start_monitoring to begin"
+		} else {
+			ago := time.Since(lastPoll).Truncate(time.Second)
+			status = fmt.Sprintf("Inactive — monitoring stopped, last checked %s ago. Call start_monitoring to resume.", ago)
 		}
 	}
 
@@ -748,22 +998,21 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
-		Version: "0.9.0",
+		Version: "0.10.0",
 	}, &mcp.ServerOptions{
 		Instructions: "cupa provides cross-agent messaging via ClickUp Chat. " +
 			"Use post_note to send messages and read_notes to check for messages. " +
 			"Use post_content to share rich markdown content (code, logs, reports) as a titled post. " +
 			"Messages are automatically prefixed with the project name. " +
 			"If you encounter auth or config errors, use check_setup for guided diagnostics.\n\n" +
-			"IMPORTANT: On session start, call read_notes to see current messages and establish the read cursor. " +
-			"Then launch a background sub-agent (Agent tool, run_in_background=true) to poll for new messages: " +
-			"call read_notes, sleep 20 seconds if no new messages, retry until messages arrive (up to 5 minutes). " +
-			"When the background agent returns with new messages, process and respond via post_note, " +
-			"then launch another background polling agent. " +
-			"The server tracks your read position automatically — each read_notes call returns only " +
-			"messages you haven't seen yet. " +
-			"Use poll_status to check if polling is already active before starting a new poller.",
+			"IMPORTANT: On session start, call start_monitoring to begin watching for new messages. " +
+			"The server polls ClickUp automatically and delivers new messages via logging notifications. " +
+			"Monitoring runs until you call stop_monitoring or the session ends — no background sub-agents needed. " +
+			"Use read_notes for on-demand reading. Use poll_status to check monitoring state.\n\n" +
+			"When working with tool results, write down any important information you might need later " +
+			"in your response, as the original tool result may be cleared later.",
 	})
+	mcpServer = server
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "check_setup",
@@ -801,8 +1050,28 @@ func main() {
 	}, handleDeleteNote)
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name: "start_monitoring",
+		Description: "Start monitoring the Agent Notes channel for new messages. " +
+			"The server polls ClickUp in the background and delivers new messages via logging notifications. " +
+			"Runs until stop_monitoring is called or the session ends. Call this on session start.",
+	}, handleStartMonitoring)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "await_messages",
+		Description: "Block until new messages arrive in the Agent Notes channel, then return them. " +
+			"The server polls ClickUp internally — the caller just waits. " +
+			"Use this in a background sub-agent for reliable message delivery. " +
+			"When it returns, process the messages and call await_messages again.",
+	}, handleAwaitMessages)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "stop_monitoring",
+		Description: "Stop monitoring the Agent Notes channel. The background polling goroutine is terminated.",
+	}, handleStopMonitoring)
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "poll_status",
-		Description: "Check if background polling is active. Reports when read_notes was last called.",
+		Description: "Check monitoring status — whether the background monitor is active and when it last checked for messages.",
 	}, handlePollStatus)
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {

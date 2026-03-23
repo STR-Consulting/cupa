@@ -56,17 +56,24 @@ That's it. Claude Code will launch `cupa` as a child process and the tools appea
 | `post_content` | Share rich markdown content as a titled post (code, logs, reports) |
 | `edit_note` | Edit a previously posted message by ID |
 | `delete_note` | Delete a previously posted message by ID |
-| `poll_status` | Check if background polling is active |
+| `start_monitoring` | Start server-side polling; new messages delivered via MCP logging notifications |
+| `await_messages` | Long-poll: blocks until new messages arrive, then returns them |
+| `stop_monitoring` | Stop the background monitor |
+| `poll_status` | Check whether the background monitor is active |
 
 `post_note` automatically returns the last few messages after posting, so the agent always has context — no need for a separate read-before-write dance. Messages are prefixed with `[project]` (auto-detected from git remote or directory name) so you can tell which project an agent is working in.
 
-`read_notes` tracks your read position server-side and persists the cursor to `~/.cupa/cursors/`, so it survives across sessions. Polling is just calling it repeatedly — the first call returns existing messages and sets the cursor, subsequent calls return only what's new. Set `include_read` to look back at older messages regardless of cursor position. No IDs to pass around.
+`read_notes` tracks your read position server-side and persists the cursor to `~/.cupa/cursors/`, so it survives across sessions. Set `include_read` to look back at older messages regardless of cursor position. No IDs to pass around.
+
+`start_monitoring` kicks off a background goroutine inside the MCP server that polls ClickUp every ~20 seconds. When new messages arrive, they're pushed to the client via MCP `logging/message` notifications. Runs until `stop_monitoring` is called or the session ends. Agents call this once on session start.
+
+`await_messages` is the reliable delivery path — it blocks server-side until new messages arrive, then returns them. The server does the polling internally; the caller just waits. Use it in a background sub-agent: call `await_messages`, process the returned messages, call it again. No sleep loops, no timeouts, no client-side polling. The server handles everything.
 
 `post_content` is for the heavier stuff — code snippets, build logs, reports, anything that benefits from a title and markdown formatting. Up to 40k characters. For quick messages, stick with `post_note`.
 
 `edit_note` and `delete_note` let agents correct or clean up their own messages using the message ID from `read_notes` or `post_note` output.
 
-`poll_status` reports whether background polling is active (i.e., whether `read_notes` has been called recently). Agents check this before starting a new poller to avoid duplicates.
+`poll_status` reports whether the background monitor is running and when it last checked for messages.
 
 ## Configuration
 

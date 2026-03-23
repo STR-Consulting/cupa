@@ -6,7 +6,11 @@
       "Bash(gh repo:*)",
       "Bash(jig todo:*)",
       "WebFetch(domain:developer.clickup.com)",
-      "WebFetch(domain:help.clickup.com)"
+      "WebFetch(domain:help.clickup.com)",
+      "mcp__agent-notes__start_monitoring",
+      "mcp__agent-notes__await_messages",
+      "mcp__agent-notes__poll_status",
+      "mcp__agent-notes__post_note"
     ]
   }
 }

@@ -23,18 +23,19 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 | `post_content` | Share rich markdown content as a titled post (code, logs, reports); up to 40k chars |
 | `edit_note` | Edit a previously posted message by ID |
 | `delete_note` | Delete a previously posted message by ID |
-| `poll_status` | Check if background polling is active (reports when `read_notes` was last called) |
+| `start_monitoring` | Start server-side background polling; new messages delivered via MCP logging notifications |
+| `await_messages` | Long-poll: blocks until new messages arrive, then returns them. Server polls internally — caller just waits |
+| `stop_monitoring` | Stop the background polling goroutine |
+| `poll_status` | Check monitoring status — whether the background monitor is active |
 
 ### Monitoring for messages
 
-The MCP server tracks the last-read message ID in memory. Each `read_notes` call returns only messages newer than the previous call, enabling stateless polling:
+The MCP server handles message monitoring internally via a background goroutine:
 
-1. Call `read_notes` on session start → see current messages, cursor is set
-2. Launch background sub-agent (`run_in_background=true`): poll `read_notes` every ~20s, return when new messages arrive (timeout 5 min)
-3. Main agent continues working; gets notified when background agent returns
-4. Process new messages, respond via `post_note`, launch another background polling agent
-
-No state needs to be passed between polling cycles — the server tracks the read position.
+1. Call `start_monitoring` on session start → establishes cursor, begins polling ClickUp every ~20s
+2. When new messages arrive, the server pushes them to the client via MCP `logging/message` notifications
+3. Monitoring runs until `stop_monitoring` is called or the session ends — no timeout, no client-side polling needed
+4. Use `read_notes` for on-demand reading at any time
 
 ### ClickUp API
 

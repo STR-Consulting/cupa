@@ -1,5 +1,11 @@
 # Changelog
 
+## Week of Mar 22 – Mar 28, 2026
+
+### ✨ Features
+
+- Server-side message monitoring via `start_monitoring`/`stop_monitoring`; `await_messages` long-poll for reliable delivery
+
 ## Week of Mar 1 – Mar 7, 2026
 
 ### ✨ Features

@@ -923,6 +923,7 @@ func TestHandleDeleteNoteEmptyID(t *testing.T) {
 }
 
 func TestHandlePollStatusInactive(t *testing.T) {
+	stopMonitor()
 	lastRead.mu.Lock()
 	lastRead.lastPoll = time.Time{}
 	lastRead.mu.Unlock()
@@ -938,6 +939,9 @@ func TestHandlePollStatusInactive(t *testing.T) {
 }
 
 func TestHandlePollStatusActive(t *testing.T) {
+	startMonitor(1 * time.Hour) // long interval so it doesn't actually poll
+	defer stopMonitor()
+
 	lastRead.mu.Lock()
 	lastRead.lastPoll = time.Now()
 	lastRead.mu.Unlock()
@@ -947,12 +951,13 @@ func TestHandlePollStatusActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
-	if !contains(text, "Active") {
-		t.Errorf("expected Active, got: %s", text)
+	if !contains(text, "Monitoring active") {
+		t.Errorf("expected Monitoring active, got: %s", text)
 	}
 }
 
-func TestHandlePollStatusStale(t *testing.T) {
+func TestHandlePollStatusStopped(t *testing.T) {
+	stopMonitor()
 	lastRead.mu.Lock()
 	lastRead.lastPoll = time.Now().Add(-2 * time.Minute)
 	lastRead.mu.Unlock()
@@ -963,7 +968,7 @@ func TestHandlePollStatusStale(t *testing.T) {
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
 	if !contains(text, "Inactive") {
-		t.Errorf("expected Inactive for stale poll, got: %s", text)
+		t.Errorf("expected Inactive, got: %s", text)
 	}
 	if !contains(text, "2m0s") {
 		t.Errorf("expected time ago, got: %s", text)
