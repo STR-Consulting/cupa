@@ -108,6 +108,10 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 func TestHandlePostNote(t *testing.T) {
+	oldProject := cfg.Project
+	cfg.Project = ""
+	t.Cleanup(func() { cfg.Project = oldProject })
+
 	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			if r.Header.Get("Authorization") != "test-token" {
@@ -684,6 +688,10 @@ func resetLastRead() {
 	lastRead.mu.Lock()
 	lastRead.id = 0
 	lastRead.mu.Unlock()
+	// Remove persisted cursor file if it exists.
+	if p, err := cursorPath(); err == nil {
+		_ = os.Remove(p)
+	}
 }
 
 func TestHandleReadNotesAutoTracking(t *testing.T) {
@@ -759,6 +767,70 @@ func TestHandleReadNotesAutoTrackingWithNewMessages(t *testing.T) {
 	if contains(text, "initial") {
 		t.Errorf("second call should not return old message, got: %s", text)
 	}
+}
+
+func TestHandleReadNotesIncludeRead(t *testing.T) {
+	resetLastRead()
+
+	msgs := []message{
+		{ID: json.Number("300"), Content: "newest", Date: json.Number("1704067200000"), UserID: "a"},
+		{ID: json.Number("200"), Content: "middle", Date: json.Number("1704067100000"), UserID: "b"},
+		{ID: json.Number("100"), Content: "oldest", Date: json.Number("1704067000000"), UserID: "c"},
+	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": msgs})
+	}))
+
+	// First call: read all messages, cursor advances to 300.
+	_, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second call without include_read: no new messages.
+	result, _, err := handleReadNotes(context.Background(), nil, readNotesArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "No new messages") {
+		t.Errorf("expected no new messages, got: %s", text)
+	}
+
+	// Third call with include_read: should return all messages despite cursor.
+	result, _, err = handleReadNotes(context.Background(), nil, readNotesArgs{IncludeRead: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "newest") || !contains(text, "oldest") {
+		t.Errorf("include_read should return all messages, got: %s", text)
+	}
+}
+
+func TestCursorPersistence(t *testing.T) {
+	resetLastRead()
+
+	// Save a cursor value.
+	saveCursor(42)
+
+	// Reset in-memory state.
+	lastRead.mu.Lock()
+	lastRead.id = 0
+	lastRead.mu.Unlock()
+
+	// Load should restore it.
+	loadCursor()
+	lastRead.mu.Lock()
+	got := lastRead.id
+	lastRead.mu.Unlock()
+
+	if got != 42 {
+		t.Errorf("expected cursor 42 after load, got %d", got)
+	}
+
+	// Clean up.
+	resetLastRead()
 }
 
 func contains(s, substr string) bool {

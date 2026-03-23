@@ -111,9 +111,59 @@ var rateLimiter = struct {
 
 // lastRead tracks the most recent message ID returned by read_notes,
 // enabling automatic incremental polling without caller-managed state.
+// Persisted to ~/.cupa/cursors/<channel_id> across sessions.
 var lastRead struct {
 	mu sync.Mutex
 	id int64
+}
+
+// cursorDir returns the directory for persisted cursors (~/.cupa/cursors).
+func cursorDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cupa", "cursors"), nil
+}
+
+// cursorPath returns the file path for the current channel's cursor.
+func cursorPath() (string, error) {
+	dir, err := cursorDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, cfg.ChannelID), nil
+}
+
+// loadCursor reads the persisted cursor for the current channel.
+func loadCursor() {
+	path, err := cursorPath()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var id int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &id); err == nil && id > 0 {
+		lastRead.mu.Lock()
+		lastRead.id = id
+		lastRead.mu.Unlock()
+	}
+}
+
+// saveCursor persists the current cursor for the current channel.
+func saveCursor(id int64) {
+	path, err := cursorPath()
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, fmt.Appendf(nil, "%d\n", id), 0o600)
 }
 
 func clickupRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
@@ -380,7 +430,8 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 // --- Tool: read_notes ---
 
 type readNotesArgs struct {
-	Limit int `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
+	Limit       int  `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
+	IncludeRead bool `json:"include_read" jsonschema:"Return recent messages regardless of read position (for reviewing older notes)"`
 }
 
 func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotesArgs) (*mcp.CallToolResult, any, error) {
@@ -400,18 +451,25 @@ func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotes
 		latestID, _ = messages[0].ID.Int64()
 	}
 
-	// Get the server-side cursor.
-	lastRead.mu.Lock()
-	afterID := lastRead.id
-	lastRead.mu.Unlock()
+	// Get the server-side cursor (skip if include_read).
+	var afterID int64
+	if !args.IncludeRead {
+		lastRead.mu.Lock()
+		afterID = lastRead.id
+		lastRead.mu.Unlock()
+	}
 
 	// Advance the cursor to the latest message.
 	if latestID > 0 {
 		lastRead.mu.Lock()
-		if latestID > lastRead.id {
+		advanced := latestID > lastRead.id
+		if advanced {
 			lastRead.id = latestID
 		}
 		lastRead.mu.Unlock()
+		if advanced {
+			saveCursor(latestID)
+		}
 	}
 
 	// If we have a cursor, filter and return chronological order.
@@ -585,6 +643,7 @@ func main() {
 	if err := loadConfig(); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	loadCursor()
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cupa",
@@ -618,7 +677,8 @@ func main() {
 		Name: "read_notes",
 		Description: "Read messages from the Agent Notes channel. " +
 			"The server tracks your read position automatically — " +
-			"the first call returns existing messages, subsequent calls return only new messages.",
+			"the first call returns existing messages, subsequent calls return only new messages. " +
+			"Set include_read to review older messages regardless of read position.",
 	}, handleReadNotes)
 
 	mcp.AddTool(server, &mcp.Tool{

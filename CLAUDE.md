@@ -19,7 +19,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 |------|-------------|
 | `check_setup` | Check config status, show setup instructions for token/workspace/channel |
 | `post_note` | Post a message (auto-prefixed with sender if configured), returns recent messages for context |
-| `read_notes` | Read messages; server tracks read position automatically (first call returns all, subsequent calls return only new) |
+| `read_notes` | Read messages; server tracks read position automatically (first call returns all, subsequent calls return only new); set `include_read` to review older messages |
 | `post_content` | Share rich markdown content as a titled post (code, logs, reports); up to 40k chars |
 
 ### Monitoring for messages
