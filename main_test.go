@@ -833,6 +833,143 @@ func TestCursorPersistence(t *testing.T) {
 	resetLastRead()
 }
 
+func TestHandleEditNote(t *testing.T) {
+	var patchedBody map[string]string
+	var patchedPath string
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		patchedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&patchedBody); err != nil {
+			t.Fatal(err)
+		}
+		resp := message{ID: json.Number("555"), Content: patchedBody["content"], Date: json.Number("0"), UserID: "u1"}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	result, _, err := handleEditNote(context.Background(), nil, editNoteArgs{
+		MessageID: "555",
+		Content:   "updated text",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "555") {
+		t.Errorf("expected message ID in result, got: %s", text)
+	}
+	if patchedBody["content"] != "updated text" {
+		t.Errorf("expected updated content, got: %s", patchedBody["content"])
+	}
+	if !contains(patchedPath, "/chat/messages/555") {
+		t.Errorf("expected message path, got: %s", patchedPath)
+	}
+}
+
+func TestHandleEditNoteEmptyFields(t *testing.T) {
+	t.Setenv("CLICKUP_TOKEN", "test-token")
+
+	result, _, err := handleEditNote(context.Background(), nil, editNoteArgs{MessageID: "", Content: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for empty message_id")
+	}
+
+	result, _, err = handleEditNote(context.Background(), nil, editNoteArgs{MessageID: "1", Content: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for empty content")
+	}
+}
+
+func TestHandleDeleteNote(t *testing.T) {
+	var deletedPath string
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deletedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	result, _, err := handleDeleteNote(context.Background(), nil, deleteNoteArgs{MessageID: "777"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "777") {
+		t.Errorf("expected message ID in result, got: %s", text)
+	}
+	if !contains(deletedPath, "/chat/messages/777") {
+		t.Errorf("expected message path, got: %s", deletedPath)
+	}
+}
+
+func TestHandleDeleteNoteEmptyID(t *testing.T) {
+	t.Setenv("CLICKUP_TOKEN", "test-token")
+
+	result, _, err := handleDeleteNote(context.Background(), nil, deleteNoteArgs{MessageID: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error for empty message_id")
+	}
+}
+
+func TestHandlePollStatusInactive(t *testing.T) {
+	lastRead.mu.Lock()
+	lastRead.lastPoll = time.Time{}
+	lastRead.mu.Unlock()
+
+	result, _, err := handlePollStatus(context.Background(), nil, pollStatusArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "Inactive") {
+		t.Errorf("expected Inactive, got: %s", text)
+	}
+}
+
+func TestHandlePollStatusActive(t *testing.T) {
+	lastRead.mu.Lock()
+	lastRead.lastPoll = time.Now()
+	lastRead.mu.Unlock()
+
+	result, _, err := handlePollStatus(context.Background(), nil, pollStatusArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "Active") {
+		t.Errorf("expected Active, got: %s", text)
+	}
+}
+
+func TestHandlePollStatusStale(t *testing.T) {
+	lastRead.mu.Lock()
+	lastRead.lastPoll = time.Now().Add(-2 * time.Minute)
+	lastRead.mu.Unlock()
+
+	result, _, err := handlePollStatus(context.Background(), nil, pollStatusArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !contains(text, "Inactive") {
+		t.Errorf("expected Inactive for stale poll, got: %s", text)
+	}
+	if !contains(text, "2m0s") {
+		t.Errorf("expected time ago, got: %s", text)
+	}
+}
+
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }

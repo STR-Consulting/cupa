@@ -117,8 +117,9 @@ var rateLimiter = struct {
 // enabling automatic incremental polling without caller-managed state.
 // Persisted to ~/.cupa/cursors/<channel_id> across sessions.
 var lastRead struct {
-	mu sync.Mutex
-	id int64
+	mu       sync.Mutex
+	id       int64
+	lastPoll time.Time // when read_notes was last called
 }
 
 // cursorDir returns the directory for persisted cursors (~/.cupa/cursors).
@@ -305,6 +306,13 @@ func toolError(msg string) *mcp.CallToolResult {
 	}
 }
 
+func unmarshalResponse(data []byte, v any) *mcp.CallToolResult {
+	if err := json.Unmarshal(data, v); err != nil {
+		return toolError(fmt.Sprintf("parse response: %v", err))
+	}
+	return nil
+}
+
 // --- Tool: check_setup ---
 
 type checkSetupArgs struct{}
@@ -411,8 +419,8 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 	}
 
 	var posted message
-	if err := json.Unmarshal(data, &posted); err != nil {
-		return toolError(fmt.Sprintf("parse response: %v", err)), nil, nil
+	if errResult := unmarshalResponse(data, &posted); errResult != nil {
+		return errResult, nil, nil
 	}
 
 	// Return recent messages alongside confirmation so the agent has context.
@@ -439,6 +447,11 @@ type readNotesArgs struct {
 }
 
 func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotesArgs) (*mcp.CallToolResult, any, error) {
+	// Record poll timestamp.
+	lastRead.mu.Lock()
+	lastRead.lastPoll = time.Now()
+	lastRead.mu.Unlock()
+
 	limit := args.Limit
 	if limit <= 0 {
 		limit = defaultLimit
@@ -630,8 +643,8 @@ func handlePostContent(ctx context.Context, _ *mcp.CallToolRequest, args postCon
 	}
 
 	var posted message
-	if err := json.Unmarshal(data, &posted); err != nil {
-		return toolError(fmt.Sprintf("parse response: %v", err)), nil, nil
+	if errResult := unmarshalResponse(data, &posted); errResult != nil {
+		return errResult, nil, nil
 	}
 
 	return &mcp.CallToolResult{
@@ -663,8 +676,8 @@ func handleEditNote(ctx context.Context, _ *mcp.CallToolRequest, args editNoteAr
 	}
 
 	var edited message
-	if err := json.Unmarshal(data, &edited); err != nil {
-		return toolError(fmt.Sprintf("parse response: %v", err)), nil, nil
+	if errResult := unmarshalResponse(data, &edited); errResult != nil {
+		return errResult, nil, nil
 	}
 
 	return &mcp.CallToolResult{
@@ -697,6 +710,34 @@ func handleDeleteNote(ctx context.Context, _ *mcp.CallToolRequest, args deleteNo
 	}, nil, nil
 }
 
+// --- Tool: poll_status ---
+
+const pollActiveThreshold = 60 * time.Second
+
+type pollStatusArgs struct{}
+
+func handlePollStatus(_ context.Context, _ *mcp.CallToolRequest, _ pollStatusArgs) (*mcp.CallToolResult, any, error) {
+	lastRead.mu.Lock()
+	lastPoll := lastRead.lastPoll
+	lastRead.mu.Unlock()
+
+	var status string
+	if lastPoll.IsZero() {
+		status = "Inactive — read_notes has not been called this session"
+	} else {
+		ago := time.Since(lastPoll).Truncate(time.Second)
+		if ago < pollActiveThreshold {
+			status = fmt.Sprintf("Active — last polled %s ago", ago)
+		} else {
+			status = fmt.Sprintf("Inactive — last polled %s ago", ago)
+		}
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: status}},
+	}, nil, nil
+}
+
 func main() {
 	log.SetOutput(os.Stderr)
 
@@ -720,7 +761,8 @@ func main() {
 			"When the background agent returns with new messages, process and respond via post_note, " +
 			"then launch another background polling agent. " +
 			"The server tracks your read position automatically — each read_notes call returns only " +
-			"messages you haven't seen yet.",
+			"messages you haven't seen yet. " +
+			"Use poll_status to check if polling is already active before starting a new poller.",
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -757,6 +799,11 @@ func main() {
 		Name:        "delete_note",
 		Description: "Delete a previously posted message. Use the message ID from read_notes or post_note output.",
 	}, handleDeleteNote)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "poll_status",
+		Description: "Check if background polling is active. Reports when read_notes was last called.",
+	}, handlePollStatus)
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("Server failed: %v", err)

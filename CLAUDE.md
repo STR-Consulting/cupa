@@ -23,6 +23,7 @@ Single Go binary, runs as MCP server via stdio. Claude Code launches it as a chi
 | `post_content` | Share rich markdown content as a titled post (code, logs, reports); up to 40k chars |
 | `edit_note` | Edit a previously posted message by ID |
 | `delete_note` | Delete a previously posted message by ID |
+| `poll_status` | Check if background polling is active (reports when `read_notes` was last called) |
 
 ### Monitoring for messages
 
