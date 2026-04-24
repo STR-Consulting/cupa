@@ -443,7 +443,7 @@ func handlePostNote(ctx context.Context, _ *mcp.CallToolRequest, args postNoteAr
 
 type readNotesArgs struct {
 	Limit       int  `json:"limit" jsonschema:"Maximum number of messages to return (default 20)"`
-	IncludeRead bool `json:"include_read" jsonschema:"Return recent messages regardless of read position (for reviewing older notes)"`
+	IncludeRead bool `json:"include_read" jsonschema:"Only set to true when the user explicitly asks to re-read old/previous messages. Default false -- returns only new unread messages."`
 }
 
 func handleReadNotes(ctx context.Context, _ *mcp.CallToolRequest, args readNotesArgs) (*mcp.CallToolResult, any, error) {
@@ -1029,7 +1029,8 @@ func main() {
 		Description: "Read messages from the Agent Notes channel. " +
 			"The server tracks your read position automatically — " +
 			"the first call returns existing messages, subsequent calls return only new messages. " +
-			"Set include_read to review older messages regardless of read position.",
+			"Always use include_read: false (the default) unless the user explicitly asks to re-read old messages. " +
+			"Requests like \"read notes\", \"check agent notes\", or \"read latest\" mean \"show me what's new\" — use include_read: false.",
 	}, handleReadNotes)
 
 	mcp.AddTool(server, &mcp.Tool{

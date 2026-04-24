@@ -10,7 +10,8 @@
       "mcp__agent-notes__start_monitoring",
       "mcp__agent-notes__await_messages",
       "mcp__agent-notes__poll_status",
-      "mcp__agent-notes__post_note"
+      "mcp__agent-notes__post_note",
+      "Bash(gh run:*)"
     ]
   }
 }

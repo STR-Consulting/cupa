@@ -1,5 +1,11 @@
 # Changelog
 
+## Week of Apr 19 – Apr 25, 2026
+
+### ✨ Features
+
+- `read_notes` tool description now instructs agents to default `include_read` to false
+
 ## Week of Mar 22 – Mar 28, 2026
 
 ### ✨ Features
